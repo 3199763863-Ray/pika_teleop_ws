@@ -1,6 +1,6 @@
 # Pika Teleop Bridge
 
-Pika Teleop Bridge 是与具体机器人无关的 ROS 2 输入桥。它读取 Pika 官方双 Sense 的四路异步数据，执行 freshness / 数值 / 位姿跳变保护、固定坐标系转换和速度估计，以 100 Hz 发布左右独立的 `PikaTeleopState`，并通过异步 Service 与下游控制节点握手启停。
+Pika Teleop Bridge 是与具体机器人无关的 ROS 2 输入桥。它读取 Pika 官方双 Sense 的四路异步数据，执行 freshness / 数值 / 位姿跳变保护、固定坐标系转换和速度估计，以 100 Hz 发布左右独立的 `PikaTeleopState`，并通过异步 Service 与 Session Manager 握手启停。
 
 本项目不包含 RealMan SDK、机器人 TCP、IK/FK、工作空间限制、相对位姿映射、Camera、Dataset 或数据录制逻辑。本版本不录 rosbag，运行时不会自动保存采集数据。
 
@@ -68,10 +68,11 @@ Pika 官方节点
       ▼             ▼
  /left/state    /right/state
 
-启停链路（左右独立）：
+启停链路（左右本地状态独立，共享全局 episode）：
 
-双击 → PENDING_START → async enable service → success → ACTIVE
+双击 → 检查 session gate → PENDING_START → async enable service → success → ACTIVE
 三击/stale/jump → 本地立即 IDLE → async disable service
+Session Manager force_stop_all → 左右 ACTIVE/PENDING_START 全部本地 IDLE
 ```
 
 左右两侧拥有各自的 `GestureDetector`、`PoseJumpGuard`、`VelocityEstimator`、状态机、Service client 和 timeout。一侧等待、停止或异常不会改变另一侧。
@@ -129,7 +130,7 @@ float32 gripper_age_ms
 
 ### 启停 Service
 
-Bridge 是 Service Client；下游机器人控制节点必须实现 Service Server：
+Bridge 是 Service Client；正式运行由 `pika_session_manager` 实现 Service Server：
 
 | Service | Type |
 |---|---|
@@ -152,6 +153,11 @@ string message
 - 位姿跳变停止：`enable=false, reason="POSE_JUMP_STOP"`
 
 启停只通过上述两个 Service 完成，不保留重复的 Topic 通道。
+
+Bridge 还订阅：
+
+- `/pika_session/start_allowed`：gate=false 时只阻止新的 IDLE→START，不取消已进入 PENDING_START 的请求。
+- `/pika_session/force_stop_all`：不递归调用 Service，直接清除左右 ACTIVE/PENDING_START、手势、位姿保护和速度状态。
 
 ## 单侧状态机与安全语义
 
@@ -262,7 +268,8 @@ filtered = previous_filtered + alpha * (raw - previous_filtered)
 | `gesture_reset_timeout_ms` | `1200.0` | 未完成 gesture 重置时间 |
 | `max_position_jump_m` | `0.08` | 连续新 Pose 最大位置跳变 |
 | `max_rotation_jump_deg` | `45.0` | 连续新 Pose 最大旋转跳变 |
-| `start_service_timeout_ms` | `1000.0` | START response 超时 |
+| `start_service_timeout_ms` | `10000.0` | 等待 Session Manager 完成 Recorder START 的 response 超时 |
+| `use_session_gate` | `true` | 是否在新 START 前检查 Session Manager gate |
 | `velocity_filter_cutoff_hz` | `10.0` | Twist 一阶低通截止频率 |
 | `velocity_max_dt_ms` | `50.0` | 连续 Pose 最大合法 source dt |
 
@@ -287,14 +294,15 @@ cd ~/pika_ros/scripts
 bash start_multi_sensor_whit_teleop.bash
 ```
 
-终端 2，启动 Bridge：
+终端 2，推荐用正式 bringup 启动本地核心节点：
 
 ```bash
+source /opt/ros/humble/setup.bash
 source /home/lei/pika_teleop_ws/install/setup.bash
-ros2 run pika_teleop_bridge pika_teleop_publisher
+ros2 launch pika_teleop_bringup pika_teleop.launch.py
 ```
 
-下游两个 Service Server 应在双击 START 前启动。若 Server 不存在，双击后该侧保持 `PENDING_START`，state 持续 disabled，并在 `start_service_timeout_ms` 后回到 IDLE。
+Session Manager 及远端 Recorder 应在双击 START 前就绪。若 Server 不存在，双击后该侧保持 `PENDING_START`，state 持续 disabled，并在 `start_service_timeout_ms` 后回到 IDLE。正式 launch 不要与 Virtual Receiver 同时运行。
 
 ## 验收查看命令
 
@@ -331,27 +339,17 @@ Service request 不能用 `ros2 topic echo` 监听；应由下游 Server 日志�
 
 ## START 零点与下游映射
 
-Bridge 始终发布 Teleop frame 下的绝对 Pose。下游收到成功的 START 请求后，必须等待第一条 `enabled=true && valid=true` state，再同时保存：
+Bridge 始终发布 Teleop frame 下的绝对 Pose。Mapper 收到第一条 `enabled=true && valid=true` state 后，同时保存：
 
 ```text
 Pika_start_pose
-Robot_start_pose
+配置中的 RealMan default TCP pose
 ```
 
-之后由下游自行计算相对位姿和机器人目标；不要把第一条绝对 Pose 直接作为机器人绝对目标。
+之后由 Mapper 计算相对位姿和机器人目标；不要把第一条 Pika 绝对 Pose 直接作为机器人绝对目标。
 
-## 已执行 Smoke Test
+## 当前边界
 
-测试使用隔离 `ROS_DOMAIN_ID=77`、fake Pika publishers 和 mock `SetTeleopEnabled` servers，不操作真实 Sense、不录 bag。结果：
+Bridge 只负责标准化 Teleop state、手势与 Sense 侧安全，不包含 Recorder、RealMan Action 或 SDK 逻辑。正式 Service Server 由 `pika_session_manager` 提供，相对位姿由 `pika_realman_mapper` 处理，远端 Receiver 仍负责 command watchdog、限速、工作空间与机械臂安全。
 
-- 接口包与运行包完整构建通过；
-- 延迟 START response 期间 state 继续约 100 Hz 且 enabled/valid 均为 false；
-- START 成功、拒绝和 timeout 路径通过；
-- USER_STOP、STALE_STOP、POSE_JUMP_STOP 的本地停用和异步请求通过；
-- old `+X/+Y/+Z` 映射、identity 及 old X/Y/Z orientation 转换通过；
-- 已知线速度、角速度、source-stamp dt、`q/-q`、低通阶跃与异常 dt reset 通过；
-- 一侧 PENDING/STOP/stale/jump 时另一侧保持独立运行。
-
-## 当前边界与下一步
-
-当前实现完成到标准化 Teleop state 和启停 Service client。正式联调仍需下游实现两个 Service Server、state 三层门控/watchdog、机器人相对映射及自身限速/工作空间保护。用户完成真实 Sense、Service、Twist、Safety 和 100 Hz 手动验收后，再单独录制正式 rosbag；本版本不创建 bag 文件。
+本地节点不录 rosbag。正式示教数据由远端 Recorder 保存，保存位置由 Recorder 的 profile/配置决定。

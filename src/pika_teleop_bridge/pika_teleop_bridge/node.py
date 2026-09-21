@@ -1,6 +1,7 @@
 """100 Hz robot-agnostic Pika teleoperation state bridge."""
 
 import math
+import time
 from typing import Dict, Optional, Tuple
 
 import rclpy
@@ -15,6 +16,7 @@ from rclpy.qos import (
 
 from pika_teleop_interfaces.msg import PikaTeleopState
 from pika_teleop_interfaces.srv import SetTeleopEnabled
+from std_msgs.msg import Bool, Empty
 
 from .frame_transform import PikaFrameTransform
 from .gesture import GestureDetector
@@ -41,15 +43,21 @@ class PikaTeleopPublisher(Node):
         self.declare_parameter('gesture_reset_timeout_ms', 1200.0)
         self.declare_parameter('max_position_jump_m', 0.08)
         self.declare_parameter('max_rotation_jump_deg', 45.0)
-        self.declare_parameter('start_service_timeout_ms', 1000.0)
+        self.declare_parameter('start_service_timeout_ms', 10000.0)
         self.declare_parameter('velocity_filter_cutoff_hz', 10.0)
         self.declare_parameter('velocity_max_dt_ms', 50.0)
+        self.declare_parameter('use_session_gate', True)
 
         self.state_rate_hz = self._positive_parameter('state_rate_hz')
         self.stale_stop_ms = self._positive_parameter('stale_stop_ms')
         self.start_service_timeout_ms = self._positive_parameter(
             'start_service_timeout_ms'
         )
+        self.use_session_gate = bool(
+            self.get_parameter('use_session_gate').value
+        )
+        self.start_allowed = not self.use_session_gate
+        self._last_gate_warning_ns = 0
         open_threshold = float(
             self.get_parameter('gripper_open_threshold').value
         )
@@ -120,6 +128,30 @@ class PikaTeleopPublisher(Node):
             )
             for side in self.SIDES
         }
+        gate_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        force_stop_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._start_gate_subscription = self.create_subscription(
+            Bool,
+            '/pika_session/start_allowed',
+            self._start_allowed_callback,
+            gate_qos,
+        )
+        self._force_stop_subscription = self.create_subscription(
+            Empty,
+            '/pika_session/force_stop_all',
+            self._force_stop_all_callback,
+            force_stop_qos,
+        )
         self.pending_start_futures: Dict[str, Optional[object]] = {
             side: None for side in self.SIDES
         }
@@ -134,7 +166,7 @@ class PikaTeleopPublisher(Node):
         self.get_logger().info(
             'Pika teleop bridge ready: state=%.1f Hz, stale=%.1f ms, '
             'start_timeout=%.1f ms, velocity=(%.1f Hz, %.1f ms), '
-            'pose_jump=(%.3f m, %.1f deg)'
+            'pose_jump=(%.3f m, %.1f deg), session_gate=%s'
             % (
                 self.state_rate_hz,
                 self.stale_stop_ms,
@@ -143,8 +175,27 @@ class PikaTeleopPublisher(Node):
                 velocity_max_dt_ms,
                 max_position_jump_m,
                 max_rotation_jump_deg,
+                self.use_session_gate,
             )
         )
+
+    def _start_allowed_callback(self, message: Bool) -> None:
+        allowed = bool(message.data)
+        if allowed != self.start_allowed:
+            self.get_logger().info(f'SESSION START ALLOWED={allowed}')
+        self.start_allowed = allowed
+
+    def _force_stop_all_callback(self, _message: Empty) -> None:
+        for side in self.SIDES:
+            future = self.pending_start_futures[side]
+            if future is not None and not future.done():
+                future.cancel()
+            self.mode[side] = self.IDLE
+            self._clear_pending_start(side)
+            self.detectors[side].reset()
+            self.pose_guards[side].reset()
+            self.velocity_estimators[side].reset()
+        self.get_logger().warning('SESSION FORCE STOP ALL')
 
     def _positive_parameter(self, name: str) -> float:
         value = float(self.get_parameter(name).value)
@@ -385,6 +436,14 @@ class PikaTeleopPublisher(Node):
                 self.get_logger().warning(
                     f'{side.upper()} USER_START rejected locally: data unusable'
                 )
+                return
+            if self.use_session_gate and not self.start_allowed:
+                now_ns = time.monotonic_ns()
+                if now_ns - self._last_gate_warning_ns >= 1_000_000_000:
+                    self._last_gate_warning_ns = now_ns
+                    self.get_logger().warning(
+                        f'{side.upper()} USER_START blocked: session not ready'
+                    )
                 return
             self._request_start(side, sample_time_ns)
             return

@@ -1,4 +1,4 @@
-"""ROS 2 node mapping Pika sessions to RealMan Cartesian command topics."""
+"""Map Pika session-relative motion from configured RealMan TCP zero poses."""
 
 from dataclasses import dataclass
 import math
@@ -9,15 +9,14 @@ from geometry_msgs.msg import Pose, PoseStamped, TwistStamped
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
 )
-from rclpy.time import Time
 from std_msgs.msg import Float32
-from tf2_ros import Buffer, TransformListener
 
 from pika_teleop_interfaces.msg import PikaTeleopState
 
@@ -31,12 +30,12 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 
 @dataclass
 class SideRuntime:
-    """Configuration and independent session state for one arm."""
+    """Configuration and independent command session for one arm."""
 
     side: str
     short_name: str
     base_frame: str
-    tcp_frame: str
+    default_tcp_pose: Pose
     mapper: PoseMapper
     velocity: TargetVelocityEstimator
     gripper_closed: float
@@ -46,11 +45,7 @@ class SideRuntime:
     gripper_publisher: Any
     latest_state: Optional[PikaTeleopState] = None
     last_receipt_ns: Optional[int] = None
-    tf_future: Optional[Any] = None
-    tf_wait_start_ns: Optional[int] = None
-    last_tf_warning_ns: int = 0
     last_input_warning_ns: int = 0
-    last_watchdog_warning_ns: int = 0
     watchdog_active: bool = False
     rearm_required: bool = False
     last_processed_pose_stamp_ns: Optional[int] = None
@@ -62,7 +57,7 @@ class SideRuntime:
 
 
 class PikaRealManMapper(Node):
-    """Generate fixed-base RealMan targets from Pika session-relative motion."""
+    """Generate fixed-zero RealMan targets without reading RealMan TF."""
 
     SIDES = ('left', 'right')
     DEFAULT_MAP = [0.70710678, 0.0, -0.70710678, 0.0]
@@ -73,9 +68,6 @@ class PikaRealManMapper(Node):
 
         self.command_rate_hz = self._positive_parameter('command_rate_hz')
         self.state_timeout_ms = self._positive_parameter('state_timeout_ms')
-        self.tf_lookup_timeout_ms = self._positive_parameter(
-            'tf_lookup_timeout_ms'
-        )
         velocity_filter_cutoff_hz = self._positive_parameter(
             'velocity_filter_cutoff_hz'
         )
@@ -85,9 +77,6 @@ class PikaRealManMapper(Node):
         self._state_timeout_ns = int(
             self.state_timeout_ms * NANOSECONDS_PER_MILLISECOND
         )
-        self._tf_lookup_timeout_ns = int(
-            self.tf_lookup_timeout_ms * NANOSECONDS_PER_MILLISECOND
-        )
 
         io_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -95,17 +84,9 @@ class PikaRealManMapper(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.tf_buffer = Buffer(node=self)
-        self.tf_listener = TransformListener(
-            self.tf_buffer,
-            self,
-            spin_thread=False,
-        )
-
         self.runtime: Dict[str, SideRuntime] = {}
         for side, short_name in (('left', 'l'), ('right', 'r')):
             base_frame = self._string_parameter(f'{side}_base_frame')
-            tcp_frame = self._string_parameter(f'{side}_tcp_frame')
             mapping = self._quaternion_parameter(
                 f'{side}_base_from_pika_quaternion_xyzw'
             )
@@ -121,11 +102,12 @@ class PikaRealManMapper(Node):
                     f'{side}_gripper_open_position must exceed '
                     f'{side}_gripper_closed_position'
                 )
+            default_tcp = self._default_tcp_pose(side)
             self.runtime[side] = SideRuntime(
                 side=side,
                 short_name=short_name,
                 base_frame=base_frame,
-                tcp_frame=tcp_frame,
+                default_tcp_pose=default_tcp,
                 mapper=PoseMapper(mapping, scale),
                 velocity=TargetVelocityEstimator(
                     velocity_filter_cutoff_hz,
@@ -165,38 +147,38 @@ class PikaRealManMapper(Node):
         )
         self.get_logger().info(
             'Pika RealMan mapper ready: command_rate=%.1f Hz, '
-            'state_timeout=%.1f ms, async_tf_window=%.1f ms'
-            % (
-                self.command_rate_hz,
-                self.state_timeout_ms,
-                self.tf_lookup_timeout_ms,
-            )
+            'state_timeout=%.1f ms, fixed configured TCP zero poses'
+            % (self.command_rate_hz, self.state_timeout_ms)
         )
 
     def _declare_parameters(self) -> None:
         self.declare_parameter('command_rate_hz', 100.0)
         self.declare_parameter('state_timeout_ms', 100.0)
         self.declare_parameter('left_base_frame', 'l/base_link')
-        self.declare_parameter('left_tcp_frame', 'l/link_6')
         self.declare_parameter('right_base_frame', 'r/base_link')
-        self.declare_parameter('right_tcp_frame', 'r/link_6')
         self.declare_parameter('translation_scale_left', 1.0)
         self.declare_parameter('translation_scale_right', 1.0)
         self.declare_parameter(
-            'left_base_from_pika_quaternion_xyzw',
-            self.DEFAULT_MAP,
+            'left_base_from_pika_quaternion_xyzw', self.DEFAULT_MAP
         )
         self.declare_parameter(
-            'right_base_from_pika_quaternion_xyzw',
-            self.DEFAULT_MAP,
+            'right_base_from_pika_quaternion_xyzw', self.DEFAULT_MAP
         )
         self.declare_parameter('velocity_filter_cutoff_hz', 10.0)
         self.declare_parameter('velocity_max_dt_ms', 50.0)
-        self.declare_parameter('tf_lookup_timeout_ms', 200.0)
         self.declare_parameter('left_gripper_closed_position', 0.0)
         self.declare_parameter('left_gripper_open_position', 0.1)
         self.declare_parameter('right_gripper_closed_position', 0.0)
         self.declare_parameter('right_gripper_open_position', 0.1)
+        for side in self.SIDES:
+            self.declare_parameter(
+                f'{side}_default_tcp_position_m',
+                Parameter.Type.DOUBLE_ARRAY,
+            )
+            self.declare_parameter(
+                f'{side}_default_tcp_orientation_xyzw',
+                Parameter.Type.DOUBLE_ARRAY,
+            )
 
     def _finite_parameter(self, name: str) -> float:
         value = float(self.get_parameter(name).value)
@@ -216,11 +198,42 @@ class PikaRealManMapper(Node):
             raise ValueError(f'{name} must not be empty')
         return value
 
-    def _quaternion_parameter(self, name: str) -> Tuple[float, ...]:
-        values = tuple(float(value) for value in self.get_parameter(name).value)
-        if len(values) != 4:
-            raise ValueError(f'{name} must contain four xyzw values')
+    def _array_parameter(self, name: str, size: int) -> Tuple[float, ...]:
+        raw = self.get_parameter(name).value
+        values = () if raw is None else tuple(float(value) for value in raw)
+        if len(values) != size:
+            raise ValueError(f'{name} must contain exactly {size} values')
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f'{name} must contain only finite values')
         return values
+
+    def _quaternion_parameter(self, name: str) -> Tuple[float, ...]:
+        return self._array_parameter(name, 4)
+
+    def _default_tcp_pose(self, side: str) -> Pose:
+        position = self._array_parameter(
+            f'{side}_default_tcp_position_m', 3
+        )
+        orientation = self._array_parameter(
+            f'{side}_default_tcp_orientation_xyzw', 4
+        )
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = position
+        (
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ) = orientation
+        normalized_position, normalized_orientation = pose_values(pose)
+        pose.position.x, pose.position.y, pose.position.z = normalized_position
+        (
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ) = normalized_orientation
+        return pose
 
     @staticmethod
     def _source_stamp_ns(message: PikaTeleopState) -> int:
@@ -236,33 +249,14 @@ class PikaRealManMapper(Node):
         return math.isfinite(float(message.gripper_position))
 
     @staticmethod
-    def _transform_pose(transform) -> Pose:
-        pose = Pose()
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        pose.position.x = translation.x
-        pose.position.y = translation.y
-        pose.position.z = translation.z
-        pose.orientation.x = rotation.x
-        pose.orientation.y = rotation.y
-        pose.orientation.z = rotation.z
-        pose.orientation.w = rotation.w
-        pose_values(pose)
-        return pose
-
-    @staticmethod
-    def _pose_text(pose_values_tuple) -> str:
-        position, orientation = pose_values_tuple
+    def _pose_text(values) -> str:
+        position, orientation = values
         return 'p=(%.4f,%.4f,%.4f) q=(%.4f,%.4f,%.4f,%.4f)' % (
             *position,
             *orientation,
         )
 
-    def _state_callback(
-        self,
-        side: str,
-        message: PikaTeleopState,
-    ) -> None:
+    def _state_callback(self, side: str, message: PikaTeleopState) -> None:
         runtime = self.runtime[side]
         now_ns = time.monotonic_ns()
         runtime.latest_state = message
@@ -277,16 +271,13 @@ class PikaRealManMapper(Node):
             self.get_logger().info(
                 f'{side.upper()} state stream recovered{suffix}'
             )
-
         if not message.enabled:
             self._reset_session(runtime, 'state disabled')
             runtime.rearm_required = False
             return
         if not message.valid:
             self._reset_session(
-                runtime,
-                'state invalid',
-                require_rearm=True,
+                runtime, 'state invalid', require_rearm=True
             )
             return
         if not self._state_values_valid(message):
@@ -310,100 +301,45 @@ class PikaRealManMapper(Node):
         warning: bool = False,
     ) -> None:
         had_session = runtime.session_initialized
-        was_waiting = runtime.tf_future is not None
-        if runtime.tf_future is not None and not runtime.tf_future.done():
-            runtime.tf_future.cancel()
-        runtime.tf_future = None
-        runtime.tf_wait_start_ns = None
         runtime.mapper.reset()
         runtime.velocity.reset()
         runtime.last_processed_pose_stamp_ns = None
         runtime.target_pose = None
         runtime.rearm_required = runtime.rearm_required or require_rearm
-        if had_session or was_waiting:
+        if had_session:
             text = f'{runtime.side.upper()} SESSION STOPPED: {reason}'
             if warning:
                 self.get_logger().warning(text)
             else:
                 self.get_logger().info(text)
 
-    def _warn_waiting_tf(self, runtime: SideRuntime, now_ns: int) -> None:
-        if now_ns - runtime.last_tf_warning_ns < NANOSECONDS_PER_SECOND:
-            return
-        runtime.last_tf_warning_ns = now_ns
-        self.get_logger().warning(
-            '%s waiting for RealMan TF %s -> %s ...'
-            % (
-                runtime.side.upper(),
-                runtime.base_frame,
-                runtime.tcp_frame,
-            )
-        )
-
-    def _try_initialize_session(
-        self,
-        runtime: SideRuntime,
-        now_ns: int,
-    ) -> None:
+    def _initialize_session(self, runtime: SideRuntime) -> None:
         message = runtime.latest_state
         if message is None or runtime.rearm_required:
             return
-        if runtime.tf_future is None:
-            runtime.tf_future = self.tf_buffer.wait_for_transform_async(
-                runtime.base_frame,
-                runtime.tcp_frame,
-                Time(),
-            )
-            runtime.tf_wait_start_ns = now_ns
-
-        if not runtime.tf_future.done():
-            self._warn_waiting_tf(runtime, now_ns)
-            if (
-                runtime.tf_wait_start_ns is not None
-                and now_ns - runtime.tf_wait_start_ns
-                >= self._tf_lookup_timeout_ns
-            ):
-                runtime.tf_future.cancel()
-                runtime.tf_future = None
-                runtime.tf_wait_start_ns = None
-            return
-
         try:
-            runtime.tf_future.result()
-            transform = self.tf_buffer.lookup_transform(
-                runtime.base_frame,
-                runtime.tcp_frame,
-                Time(),
-            )
-            rm_start = self._transform_pose(transform)
-            runtime.mapper.initialize(message.pose, rm_start)
+            runtime.mapper.initialize(message.pose, runtime.default_tcp_pose)
             runtime.target_pose = runtime.mapper.map_pose(message.pose)
-        except Exception as exc:  # TF futures can surface several rclpy errors.
-            runtime.tf_future = None
-            runtime.tf_wait_start_ns = None
-            self._warn_waiting_tf(runtime, now_ns)
-            if now_ns - runtime.last_input_warning_ns >= NANOSECONDS_PER_SECOND:
-                runtime.last_input_warning_ns = now_ns
-                self.get_logger().warning(
-                    f'{runtime.side.upper()} TF/reference rejected: {exc}'
-                )
+        except (ValueError, RuntimeError) as exc:
+            self._reset_session(
+                runtime,
+                f'reference error: {exc}',
+                require_rearm=True,
+                warning=True,
+            )
             return
-
-        runtime.tf_future = None
-        runtime.tf_wait_start_ns = None
         runtime.velocity.reset()
         source_stamp_ns = self._source_stamp_ns(message)
         runtime.velocity.update(runtime.target_pose, source_stamp_ns)
         runtime.last_processed_pose_stamp_ns = source_stamp_ns
         self.get_logger().info(
-            '\n%s SESSION STARTED\n  pika_start=%s\n  rm_start=%s\n'
-            '  base_frame=%s tcp_frame=%s'
+            '\n%s SESSION STARTED\n  pika_start=%s\n  rm_default=%s\n'
+            '  base_frame=%s'
             % (
                 runtime.side.upper(),
                 self._pose_text(runtime.mapper.pika_start),
                 self._pose_text(runtime.mapper.rm_start),
                 runtime.base_frame,
-                runtime.tcp_frame,
             )
         )
 
@@ -412,10 +348,7 @@ class PikaRealManMapper(Node):
             return False
         if now_ns - runtime.last_receipt_ns <= self._state_timeout_ns:
             return True
-        was_commanding = (
-            runtime.session_initialized or runtime.tf_future is not None
-        )
-        if was_commanding:
+        if runtime.session_initialized:
             self._reset_session(
                 runtime,
                 'state watchdog timeout',
@@ -423,7 +356,6 @@ class PikaRealManMapper(Node):
                 warning=True,
             )
             runtime.watchdog_active = True
-            runtime.last_watchdog_warning_ns = now_ns
         return False
 
     def _publish_commands(
@@ -447,7 +379,6 @@ class PikaRealManMapper(Node):
                 warning=True,
             )
             return
-
         source_stamp_ns = self._source_stamp_ns(message)
         if source_stamp_ns != runtime.last_processed_pose_stamp_ns:
             runtime.velocity.update(target, source_stamp_ns)
@@ -462,11 +393,9 @@ class PikaRealManMapper(Node):
         velocity_message.header.stamp = command_stamp
         velocity_message.header.frame_id = runtime.base_frame
         velocity_message.twist = runtime.velocity.twist
-        gripper_message = Float32()
-        gripper_message.data = percentage
         runtime.pose_publisher.publish(pose_message)
         runtime.velocity_publisher.publish(velocity_message)
-        runtime.gripper_publisher.publish(gripper_message)
+        runtime.gripper_publisher.publish(Float32(data=percentage))
 
     def _command_tick(self) -> None:
         now_ns = time.monotonic_ns()
@@ -481,7 +410,7 @@ class PikaRealManMapper(Node):
             if not self._state_values_valid(message):
                 continue
             if not runtime.session_initialized:
-                self._try_initialize_session(runtime, now_ns)
+                self._initialize_session(runtime)
             if not runtime.session_initialized:
                 continue
             self._publish_commands(runtime, message, command_stamp)

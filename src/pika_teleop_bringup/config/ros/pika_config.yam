@@ -1,0 +1,43 @@
+pika_teleop_publisher:
+  ros__parameters:
+    use_session_gate: true
+    start_service_timeout_ms: 10000.0
+
+pika_realman_mapper:
+  ros__parameters:
+    command_rate_hz: 100.0
+    state_timeout_ms: 100.0
+    left_base_frame: "l/base_link"
+    right_base_frame: "r/base_link"
+    left_default_tcp_position_m: [-0.323, -0.028, 0.304]
+    left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]
+    right_default_tcp_position_m: [-0.299, 0.014, 0.319]
+    right_default_tcp_orientation_xyzw: [0.989, -0.052, -0.047, 0.128]
+    left_base_from_pika_quaternion_xyzw: [0.70710678, 0.0, -0.70710678, 0.0]
+    right_base_from_pika_quaternion_xyzw: [0.70710678, 0.0, -0.70710678, 0.0]
+    translation_scale_left: 1.0
+    translation_scale_right: 1.0
+    left_gripper_closed_position: 0.0
+    left_gripper_open_position: 0.1
+    right_gripper_closed_position: 0.0
+    right_gripper_open_position: 0.1
+    velocity_filter_cutoff_hz: 10.0
+    velocity_max_dt_ms: 50.0
+
+pika_session_manager:
+  ros__parameters:
+    recording_service: "/recording/manage"
+    recording_status_topic: "/recording/status"
+    recording_profile: "teleop_v1"
+    recording_task: "pick_and_place"
+    recording_duration_sec: 0
+    record_cameras: true
+    prepare_retry_sec: 2.0
+    left_reset_action: "/l/execute_motion"
+    right_reset_action: "/r/execute_motion"
+    left_reset_joint_degrees: [12.172, 25.223, 73.054, -16.703, 80.307, 14.455]
+    middle_reset_joint_degrees: [0.0, 17.997, 70.0, 0.0, 90.0, 8.997]
+    right_reset_joint_degrees: [-9.89, 18.046, 79.074, 15.505, 79.606, -6.194]
+    reset_velocity_percent: 10
+    reset_blend_radius_percent: 0
+    reset_timeout_sec: 120.0
