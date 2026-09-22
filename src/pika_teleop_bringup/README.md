@@ -2,6 +2,8 @@
 
 本包集中保存 Pika→RealMan 遥操栈的正式共享参数和一键 launch。
 
+同时提供独立的 Bag/Demo 模式，用于不连接 Recorder、相机、RealMan Action 和 Session Manager 时，以真实双击手势产生六个 Mapper Topic，供用户手动录制 rosbag。正式模式与 Bag 模式不得同时启动。
+
 ## 架构与数据流
 
 ```text
@@ -45,6 +47,42 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py start_pika_official:=true
 ```
 
 官方节点已运行时不要再传 `true`。正式 launch 不启动 `pika_teleop_virtual_receiver`。
+
+## Bag/Demo 模式
+
+官方 Pika 节点已经启动时：
+
+```bash
+ros2 launch pika_teleop_bringup pika_bag.launch.py
+```
+
+需要同时启动官方 Pika 节点时：
+
+```bash
+ros2 launch pika_teleop_bringup pika_bag.launch.py start_pika_official:=true
+```
+
+Bag launch 只启动 Virtual Receiver、Publisher 和 Mapper。它读取 `config/ros/pika_bag_config.yam`，显式设置 `use_session_gate=false` 和 `accept_start=true`，不启动 Session Manager，也不访问 Recorder、相机或机械臂 Action。
+
+左右分别双击并确认六个 Mapper Topic持续输出后，另开终端手动录制：
+
+```bash
+ros2 bag record -o pika_realman_demo \
+  /pika/l/cartesian_pose \
+  /pika/l/cartesian_velocity \
+  /pika/l/gripper_percentage \
+  /pika/r/cartesian_pose \
+  /pika/r/cartesian_velocity \
+  /pika/r/gripper_percentage
+```
+
+停止录制后检查：
+
+```bash
+ros2 bag info pika_realman_demo
+```
+
+Bag launch 不会自动启动 `ros2 bag record`，不会自动模拟双击，也不会让未 START 的一侧无条件输出。
 
 ## 运行前提
 

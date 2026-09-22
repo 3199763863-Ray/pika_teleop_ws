@@ -1,0 +1,29 @@
+pika_teleop_publisher:
+  ros__parameters:
+    use_session_gate: false
+    start_service_timeout_ms: 10000.0
+
+pika_realman_mapper:
+  ros__parameters:
+    command_rate_hz: 100.0
+    state_timeout_ms: 100.0
+    left_base_frame: "l/base_link"
+    right_base_frame: "r/base_link"
+    left_default_tcp_position_m: [-0.323, -0.028, 0.304]
+    left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]
+    right_default_tcp_position_m: [-0.299, 0.014, 0.319]
+    right_default_tcp_orientation_xyzw: [0.989, -0.052, -0.047, 0.128]
+    left_base_from_pika_quaternion_xyzw: [0.70710678, 0.0, -0.70710678, 0.0]
+    right_base_from_pika_quaternion_xyzw: [0.70710678, 0.0, -0.70710678, 0.0]
+    translation_scale_left: 1.0
+    translation_scale_right: 1.0
+    left_gripper_closed_position: 0.0
+    left_gripper_open_position: 0.1
+    right_gripper_closed_position: 0.0
+    right_gripper_open_position: 0.1
+    velocity_filter_cutoff_hz: 10.0
+    velocity_max_dt_ms: 50.0
+
+pika_teleop_virtual_receiver:
+  ros__parameters:
+    accept_start: true

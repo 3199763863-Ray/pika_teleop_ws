@@ -20,6 +20,7 @@
 - [环境要求](#环境要求)
 - [构建方法](#构建方法)
 - [正式运行方法](#正式运行方法)
+- [Bag/Demo 模式](#bagdemo-模式)
 - [操作流程](#操作流程)
 - [验收与数据观察](#验收与数据观察)
 - [数据保存位置](#数据保存位置)
@@ -155,7 +156,7 @@ pika_teleop_ws/
 | `pika_teleop_bridge` | `ament_python` | Pika 输入、手势、安全检查、坐标转换、速度估计和 state 发布 |
 | `pika_session_manager` | `ament_python` | Recorder、全局 episode、START gate 和双臂复位状态机 |
 | `pika_realman_mapper` | `ament_python` | Pika 相对运动到 RealMan 固定零位目标的映射 |
-| `pika_teleop_bringup` | `ament_python` | 正式共享配置和一键 launch |
+| `pika_teleop_bringup` | `ament_python` | 正式模式与 Bag/Demo 模式的独立配置和一键 launch |
 | `pika_teleop_virtual_receiver` | `ament_python` | 不连接真机的 Bridge Service/state 验收工具 |
 | `realman_msgs` | 接口包 | RealMan Action、Service 和 Message 定义 |
 | `realman_recording_msgs` | 接口包 | Recorder Service、Action 和状态消息定义 |
@@ -163,7 +164,9 @@ pika_teleop_ws/
 关键入口文件：
 
 - [正式一键 Launch](src/pika_teleop_bringup/launch/pika_teleop.launch.py)
+- [Bag/Demo Launch](src/pika_teleop_bringup/launch/pika_bag.launch.py)
 - [共享参数配置](src/pika_teleop_bringup/config/ros/pika_config.yam)
+- [Bag/Demo 参数配置](src/pika_teleop_bringup/config/ros/pika_bag_config.yam)
 - [Session Manager](src/pika_session_manager/pika_session_manager/node.py)
 - [Pika Teleop Publisher](src/pika_teleop_bridge/pika_teleop_bridge/node.py)
 - [RealMan Mapper](src/pika_realman_mapper/pika_realman_mapper/node.py)
@@ -693,6 +696,64 @@ bash start_multi_sensor_whit_teleop.bash
 ```
 
 然后另开终端启动正式 bringup，保持默认 `start_pika_official=false`。
+
+## Bag/Demo 模式
+
+Bag/Demo 模式用于只验证并录制真实 Pika→Publisher→Mapper 链路，不依赖 Recorder、相机、Session Manager 或 RealMan Action。
+
+```text
+Pika 官方节点
+  → pika_teleop_publisher（use_session_gate=false）
+  → pika_realman_mapper
+  → 六个 /pika/l|r/* Topic
+
+pika_teleop_publisher
+  ↔ pika_teleop_virtual_receiver（accept_start=true）
+```
+
+该模式与正式模式完全分开：
+
+| 项目 | 正式模式 | Bag/Demo 模式 |
+|---|---|---|
+| Launch | `pika_teleop.launch.py` | `pika_bag.launch.py` |
+| Config | `pika_config.yam` | `pika_bag_config.yam` |
+| START Server | Session Manager | Virtual Receiver |
+| Session gate | true | false |
+| Recorder | 使用 | 不使用 |
+| 相机 PREPARE | 按正式配置 | 不使用 |
+| Reset Action | 正常 STOP 后使用 | 不使用 |
+| rosbag | 不自动录制 | 用户手动录制 |
+
+官方 Pika 节点已经启动时：
+
+```bash
+ros2 launch pika_teleop_bringup pika_bag.launch.py
+```
+
+需要一并启动官方节点时：
+
+```bash
+ros2 launch pika_teleop_bringup pika_bag.launch.py \
+  start_pika_official:=true
+```
+
+启动后左右仍需分别真实双击。确认两侧 ACTIVE 且六个 Topic 持续发布，再手动录制：
+
+```bash
+ros2 bag record -o pika_realman_demo \
+  /pika/l/cartesian_pose \
+  /pika/l/cartesian_velocity \
+  /pika/l/gripper_percentage \
+  /pika/r/cartesian_pose \
+  /pika/r/cartesian_velocity \
+  /pika/r/gripper_percentage
+```
+
+```bash
+ros2 bag info pika_realman_demo
+```
+
+严禁同时启动正式 launch 和 Bag launch，否则 Session Manager 与 Virtual Receiver 会竞争同名 `/pika_teleop/{left,right}/set_enabled` Service。
 
 ## 操作流程
 
