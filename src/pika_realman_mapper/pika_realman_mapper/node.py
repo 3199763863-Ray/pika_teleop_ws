@@ -78,10 +78,16 @@ class PikaRealManMapper(Node):
             self.state_timeout_ms * NANOSECONDS_PER_MILLISECOND
         )
 
-        io_qos = QoSProfile(
+        state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        command_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
         self.runtime: Dict[str, SideRuntime] = {}
@@ -118,17 +124,17 @@ class PikaRealManMapper(Node):
                 pose_publisher=self.create_publisher(
                     PoseStamped,
                     f'/pika/{short_name}/cartesian_pose',
-                    io_qos,
+                    command_qos,
                 ),
                 velocity_publisher=self.create_publisher(
                     TwistStamped,
                     f'/pika/{short_name}/cartesian_velocity',
-                    io_qos,
+                    command_qos,
                 ),
                 gripper_publisher=self.create_publisher(
                     Float32,
                     f'/pika/{short_name}/gripper_percentage',
-                    io_qos,
+                    command_qos,
                 ),
             )
 
@@ -137,7 +143,7 @@ class PikaRealManMapper(Node):
                 PikaTeleopState,
                 f'/pika_teleop/{side}/state',
                 lambda message, side=side: self._state_callback(side, message),
-                io_qos,
+                state_qos,
             )
             for side in self.SIDES
         ]
@@ -147,7 +153,8 @@ class PikaRealManMapper(Node):
         )
         self.get_logger().info(
             'Pika RealMan mapper ready: command_rate=%.1f Hz, '
-            'state_timeout=%.1f ms, fixed configured TCP zero poses'
+            'state_timeout=%.1f ms, command_qos=RELIABLE, '
+            'fixed configured TCP zero poses'
             % (self.command_rate_hz, self.state_timeout_ms)
         )
 

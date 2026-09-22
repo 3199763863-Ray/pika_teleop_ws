@@ -43,6 +43,8 @@ q_target = q_delta_base * q_rm_default
 - `/pika/l|r/cartesian_velocity`，`geometry_msgs/msg/TwistStamped`
 - `/pika/l|r/gripper_percentage`，`std_msgs/msg/Float32`
 
+Bridge state 输入使用 `BEST_EFFORT + VOLATILE + KEEP_LAST depth=1`；六个 RealMan command 输出按照接收端接口约定使用 `RELIABLE + VOLATILE + KEEP_LAST depth=1`。两套 QoS 分开定义，避免把 RELIABLE 错误地应用到上游 BEST_EFFORT state 订阅。
+
 输出仅在该侧 `enabled && valid`、state watchdog 正常且数值合法时发布。STOP、invalid 或 watchdog timeout 会清除 session reference 和速度状态并停止该侧输出。RealMan 接收端仍必须实现 command watchdog、限位、急停和 SDK 安全控制。
 
 ## 运行

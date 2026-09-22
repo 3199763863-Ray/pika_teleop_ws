@@ -78,8 +78,8 @@ ros2 topic echo /pika_teleop/right/state --qos-reliability best_effort --qos-dur
 观察 Mapper 输出：
 
 ```bash
-ros2 topic echo /pika/l/cartesian_pose --qos-reliability best_effort --qos-durability volatile
-ros2 topic echo /pika/r/cartesian_pose --qos-reliability best_effort --qos-durability volatile
+ros2 topic echo /pika/l/cartesian_pose --qos-reliability reliable --qos-durability volatile
+ros2 topic echo /pika/r/cartesian_pose --qos-reliability reliable --qos-durability volatile
 ```
 
 `set_enabled` 是 Service，不是可监听 event；以 Session Manager 日志、`/pika_session/state` 和 state 的 `enabled/valid` 验收。数据由远端 Recorder 保存，本地这套节点不生成 rosbag，实际保存位置由 Recorder 的 profile/配置决定。

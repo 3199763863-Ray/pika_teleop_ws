@@ -505,7 +505,7 @@ Service 是请求/响应接口，不能用 `ros2 topic echo` 监听。应观察 
 | `/pika/l/gripper_percentage` | `std_msgs/msg/Float32` | `[0, 1]` |
 | `/pika/r/gripper_percentage` | `std_msgs/msg/Float32` | `[0, 1]` |
 
-这些输出使用 BEST_EFFORT、VOLATILE、KEEP_LAST depth 1，仅在对应侧 session 有效且 watchdog 正常时持续发布。
+这些输出按照 RealMan Receiver 的正式接口约定使用 RELIABLE、VOLATILE、KEEP_LAST depth 1，仅在对应侧 session 有效且 watchdog 正常时持续发布。Mapper 对上游 Teleop state 的订阅仍使用 BEST_EFFORT；输入和输出 QoS 分开定义。
 
 ### 外部 Recorder 与 Action
 
@@ -792,11 +792,11 @@ gripper_position
 
 ```bash
 ros2 topic echo /pika/l/cartesian_pose \
-  --qos-reliability best_effort \
+  --qos-reliability reliable \
   --qos-durability volatile
 
 ros2 topic echo /pika/r/cartesian_pose \
-  --qos-reliability best_effort \
+  --qos-reliability reliable \
   --qos-durability volatile
 ```
 
@@ -933,7 +933,7 @@ Virtual Receiver：
 | `No executable found` | package 尚未重新构建，或 executable 名称错误 | 重建并检查 `ros2 pkg executables <package>` |
 | launch file not found | Bringup 未构建或终端仍使用旧 overlay | 重建 `pika_teleop_bringup` 并重新 source |
 | 自定义 `msg/srv/action` 无法显示 | `pika_teleop_interfaces`、`realman_msgs` 或 `realman_recording_msgs` 未构建/source | 完整构建工作区并重新打开终端 |
-| Topic 存在但 `echo` 没数据 | QoS 不匹配、Publisher 未运行、或输入未进入 ACTIVE | state/Mapper topic 使用 `--qos-reliability best_effort --qos-durability volatile`；再检查节点和状态 |
+| Topic 存在但 `echo` 没数据 | QoS 不匹配、Publisher 未运行、或输入未进入 ACTIVE | Teleop state 使用 `best_effort`；Mapper command 使用 `reliable`；两者 durability 均为 `volatile` |
 
 ### DDS 与跨机发现
 
