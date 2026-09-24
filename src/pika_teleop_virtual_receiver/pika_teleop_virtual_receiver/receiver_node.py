@@ -40,8 +40,8 @@ class SideStatus:
     safe_stop: bool = True
     watchdog_active: bool = False
     anomaly_counts: Dict[str, int] = field(default_factory=dict)
-    last_warned_anomaly_counts: Dict[str, int] = field(default_factory=dict)
-    last_anomaly_warning_ns: int = 0
+    reported_anomalies: set = field(default_factory=set)
+    last_logged_state: Optional[tuple] = None
 
 
 class PikaTeleopVirtualReceiver(Node):
@@ -55,12 +55,16 @@ class PikaTeleopVirtualReceiver(Node):
         self.declare_parameter('state_transition_warn_ms', 100.0)
         self.declare_parameter('state_timeout_ms', 100.0)
         self.declare_parameter('accept_start', True)
+        self.declare_parameter('periodic_summary', False)
 
         self.state_transition_warn_ms = self._positive_parameter(
             'state_transition_warn_ms'
         )
         self.state_timeout_ms = self._positive_parameter('state_timeout_ms')
         self.accept_start = bool(self.get_parameter('accept_start').value)
+        self.periodic_summary = bool(
+            self.get_parameter('periodic_summary').value
+        )
         self._transition_warn_ns = int(
             self.state_transition_warn_ms * NANOSECONDS_PER_MILLISECOND
         )
@@ -103,7 +107,10 @@ class PikaTeleopVirtualReceiver(Node):
             )
             for side in self.SIDES
         ]
-        self._summary_timer = self.create_timer(1.0, self._summary_tick)
+        self._summary_timer = (
+            self.create_timer(1.0, self._summary_tick)
+            if self.periodic_summary else None
+        )
         monitor_period_s = max(
             0.01,
             min(0.05, self.state_timeout_ms / 2000.0),
@@ -186,10 +193,27 @@ class PikaTeleopVirtualReceiver(Node):
         status.last_state_receipt_ns = now_ns
         status.rx_count += 1
         status.safe_stop = False
-        for issue in self._validate_state(message):
+        state_flags = (bool(message.enabled), bool(message.valid))
+        if state_flags != status.last_logged_state:
+            gate = 'ACCEPTED' if all(state_flags) else 'BLOCKED'
+            self.get_logger().info(
+                '%s STATE enabled=%s valid=%s control_gate=%s'
+                % (side.upper(), *state_flags, gate)
+            )
+            status.last_logged_state = state_flags
+        issues = (
+            set(self._validate_state(message))
+            if message.enabled and message.valid else set()
+        )
+        for issue in issues:
             status.anomaly_counts[issue] = (
                 status.anomaly_counts.get(issue, 0) + 1
             )
+        for issue in sorted(issues - status.reported_anomalies):
+            self.get_logger().warning(
+                f'{side.upper()} STATE DATA ANOMALY: {issue}'
+            )
+        status.reported_anomalies.update(issues)
 
     def _service_callback(self, side: str, request, response):
         status = self.status[side]
@@ -276,26 +300,6 @@ class PikaTeleopVirtualReceiver(Node):
                             self.state_transition_warn_ms,
                         )
                     )
-
-            changed_anomalies = {
-                name: count
-                for name, count in status.anomaly_counts.items()
-                if count != status.last_warned_anomaly_counts.get(name, 0)
-            }
-            if (
-                changed_anomalies
-                and now_ns - status.last_anomaly_warning_ns
-                >= NANOSECONDS_PER_SECOND
-            ):
-                details = ', '.join(
-                    f'{name}={count}'
-                    for name, count in sorted(changed_anomalies.items())
-                )
-                self.get_logger().warning(
-                    f'{side.upper()} STATE DATA ANOMALY totals: {details}'
-                )
-                status.last_warned_anomaly_counts.update(changed_anomalies)
-                status.last_anomaly_warning_ns = now_ns
 
     def _summary_tick(self) -> None:
         now_ns = time.monotonic_ns()

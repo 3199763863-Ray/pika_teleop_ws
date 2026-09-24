@@ -153,16 +153,6 @@ class PikaTeleopPublisher(Node):
             self._force_stop_all_callback,
             force_stop_qos,
         )
-        self._left_manual_enable_service = self.create_service(
-            SetTeleopEnabled,
-            '/pika_teleop/left/manual_enable',
-            self._left_manual_enable,
-        )
-        self._right_manual_enable_service = self.create_service(
-            SetTeleopEnabled,
-            '/pika_teleop/right/manual_enable',
-            self._right_manual_enable,
-        )
         self.pending_start_futures: Dict[str, Optional[object]] = {
             side: None for side in self.SIDES
         }
@@ -208,40 +198,6 @@ class PikaTeleopPublisher(Node):
             self.velocity_estimators[side].reset()
         self.get_logger().warning('SESSION FORCE STOP ALL')
 
-    def _left_manual_enable(self, request, response):
-        return self._manual_enable('left', request, response)
-
-    def _right_manual_enable(self, request, response):
-        return self._manual_enable('right', request, response)
-
-    def _manual_enable(self, side: str, request, response):
-        """CLI 等价于双击夹爪启动 / 三击夹爪停止。"""
-        if request.enable:
-            if self.mode[side] != self.IDLE:
-                response.success = False
-                response.message = (
-                    f'cannot start {side}: current mode={self.mode[side]}'
-                )
-                return response
-            if self.use_session_gate and not self.start_allowed:
-                response.success = False
-                response.message = 'session not ready (start_allowed=false)'
-                return response
-            self._request_start(side, self.get_clock().now().nanoseconds)
-            response.success = True
-            response.message = f'{side} manual start requested'
-        else:
-            if self.mode[side] == self.IDLE:
-                response.success = False
-                response.message = f'{side} already idle'
-                return response
-            future = self.pending_start_futures[side]
-            if future is not None and not future.done():
-                future.cancel()
-            self._deactivate(side, 'USER_STOP')
-            response.success = True
-            response.message = f'{side} manual stop requested'
-        return response
     def _positive_parameter(self, name: str) -> float:
         value = float(self.get_parameter(name).value)
         if not math.isfinite(value) or value <= 0.0:

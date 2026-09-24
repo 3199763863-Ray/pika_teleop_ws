@@ -1,13 +1,15 @@
 pika_teleop_publisher:
   ros__parameters:
+    velocity_max_dt_ms: 150.0
+    state_rate_hz: 20.0
     use_session_gate: false
     stale_stop_ms: 100.0
     start_service_timeout_ms: 10000.0
 
 pika_realman_mapper:
   ros__parameters:
-    command_rate_hz: 100.0
-    state_timeout_ms: 150.0
+    command_rate_hz: 20.0
+    state_timeout_ms: 200.0
     left_base_frame: "l/work/pikabase"
     right_base_frame: "r/work/pikabase"
     left_default_tcp_position_m: [-0.323, -0.028, 0.304]
@@ -23,9 +25,9 @@ pika_realman_mapper:
     right_gripper_closed_position: 0.0
     right_gripper_open_position: 0.1
     velocity_filter_cutoff_hz: 10.0
-    velocity_max_dt_ms: 50.0
+    velocity_max_dt_ms: 150.0
 
 pika_teleop_virtual_receiver:
   ros__parameters:
     accept_start: true
-    state_timeout_ms: 100.0
+    state_timeout_ms: 200.0

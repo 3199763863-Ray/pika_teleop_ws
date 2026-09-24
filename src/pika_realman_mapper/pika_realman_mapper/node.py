@@ -45,7 +45,7 @@ class SideRuntime:
     gripper_publisher: Any
     latest_state: Optional[PikaTeleopState] = None
     last_receipt_ns: Optional[int] = None
-    last_input_warning_ns: int = 0
+    invalid_input_active: bool = False
     watchdog_active: bool = False
     rearm_required: bool = False
     last_processed_pose_stamp_ns: Optional[int] = None
@@ -268,6 +268,14 @@ class PikaRealManMapper(Node):
         now_ns = time.monotonic_ns()
         runtime.latest_state = message
         runtime.last_receipt_ns = now_ns
+        invalid_input = bool(message.enabled and message.valid) and not self._state_values_valid(message)
+        if invalid_input and not runtime.invalid_input_active:
+            self.get_logger().warning(
+                f'{side.upper()} invalid Pose/Gripper; command blocked'
+            )
+        elif not invalid_input and runtime.invalid_input_active:
+            self.get_logger().info(f'{side.upper()} Pose/Gripper recovered')
+        runtime.invalid_input_active = invalid_input
         if runtime.watchdog_active:
             runtime.watchdog_active = False
             suffix = (
@@ -287,17 +295,12 @@ class PikaRealManMapper(Node):
                 runtime, 'state invalid', require_rearm=True
             )
             return
-        if not self._state_values_valid(message):
+        if invalid_input:
             self._reset_session(
                 runtime,
                 'non-finite/invalid input',
                 require_rearm=True,
             )
-            if now_ns - runtime.last_input_warning_ns >= NANOSECONDS_PER_SECOND:
-                runtime.last_input_warning_ns = now_ns
-                self.get_logger().warning(
-                    f'{side.upper()} invalid Pose/Gripper; command blocked'
-                )
 
     def _reset_session(
         self,

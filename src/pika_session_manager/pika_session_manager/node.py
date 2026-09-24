@@ -129,6 +129,7 @@ class PikaSessionManager(Node):
         self.session_id = ''
         self._prepare_future = None
         self._prepare_retry_at_ns = 0
+        self._last_prepare_failure = None
         self._stop_future = None
         self._abnormal_stop = False
         self._stop_reason = ''
@@ -339,6 +340,7 @@ class PikaSessionManager(Node):
     def _begin_prepare(self) -> None:
         self._prepare_future = None
         self._prepare_retry_at_ns = 0
+        self._last_prepare_failure = None
         self._set_state(self.PREPARING)
 
     def _poll_prepare(self, now_ns: int) -> None:
@@ -360,7 +362,9 @@ class PikaSessionManager(Node):
             result = self._prepare_future.result()
         except Exception as exc:
             result = None
-            self.get_logger().warning(f'Recording PREPARE call failed: {exc}')
+            error_message = str(exc)
+        else:
+            error_message = None
         self._prepare_future = None
         if result is not None and result.success:
             self.session_id = ''
@@ -368,10 +372,14 @@ class PikaSessionManager(Node):
             self._set_state(self.READY)
             self.get_logger().info('Recording PREPARE succeeded; START allowed')
             return
-        message = 'no response' if result is None else result.message
-        self.get_logger().warning(
-            f'Recording PREPARE failed; retrying: {message}'
+        message = error_message or (
+            'no response' if result is None else result.message
         )
+        if message != self._last_prepare_failure:
+            self.get_logger().warning(
+                f'Recording PREPARE failed; retrying: {message}'
+            )
+            self._last_prepare_failure = message
         self._prepare_retry_at_ns = now_ns + int(
             self.prepare_retry_sec * 1.0e9
         )
