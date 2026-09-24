@@ -9,11 +9,11 @@ Pika Teleop Bridge 是与具体机器人无关的 ROS 2 输入桥。它读取 Pi
 工作区固定为：
 
 ```text
-/home/lei/pika_teleop_ws
+~/pika_teleop_ws
 ```
 
 ```text
-/home/lei/pika_teleop_ws/src/
+~/pika_teleop_ws/src/
 ├── pika_teleop_interfaces/
 │   ├── CMakeLists.txt
 │   ├── package.xml
@@ -280,10 +280,10 @@ filtered = previous_filtered + alpha * (raw - previous_filtered)
 构建：
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ```
 
 终端 1，启动官方双 Sense 采集节点（已启动时不要重复启动）：
@@ -298,7 +298,7 @@ bash start_multi_sensor_whit_teleop.bash
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ros2 launch pika_teleop_bringup pika_teleop.launch.py
 ```
 
@@ -309,7 +309,7 @@ Session Manager 及远端 Recorder 应在双击 START 前就绪。若 Server 不
 每个新终端先 source 新工作区，否则 CLI 可能报 `The passed message type is invalid`：
 
 ```bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ```
 
 查看 state（推荐不手写类型）：

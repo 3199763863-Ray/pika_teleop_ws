@@ -58,6 +58,7 @@ class PikaTeleopPublisher(Node):
         )
         self.start_allowed = not self.use_session_gate
         self._last_gate_warning_ns = 0
+        self._last_input_warning_ns = {side: 0 for side in self.SIDES}
         open_threshold = float(
             self.get_parameter('gripper_open_threshold').value
         )
@@ -152,6 +153,16 @@ class PikaTeleopPublisher(Node):
             self._force_stop_all_callback,
             force_stop_qos,
         )
+        self._left_manual_enable_service = self.create_service(
+            SetTeleopEnabled,
+            '/pika_teleop/left/manual_enable',
+            self._left_manual_enable,
+        )
+        self._right_manual_enable_service = self.create_service(
+            SetTeleopEnabled,
+            '/pika_teleop/right/manual_enable',
+            self._right_manual_enable,
+        )
         self.pending_start_futures: Dict[str, Optional[object]] = {
             side: None for side in self.SIDES
         }
@@ -196,6 +207,40 @@ class PikaTeleopPublisher(Node):
             self.pose_guards[side].reset()
             self.velocity_estimators[side].reset()
         self.get_logger().warning('SESSION FORCE STOP ALL')
+
+    def _left_manual_enable(self, request, response):
+        return self._manual_enable('left', request, response)
+
+    def _right_manual_enable(self, request, response):
+        return self._manual_enable('right', request, response)
+
+    def _manual_enable(self, side: str, request, response):
+        if request.enable:
+            if self.mode[side] != self.IDLE:
+                response.success = False
+                response.message = (
+                    f'cannot start {side}: current mode={self.mode[side]}'
+                )
+                return response
+            if self.use_session_gate and not self.start_allowed:
+                response.success = False
+                response.message = 'session not ready (start_allowed=false)'
+                return response
+            self._request_start(side, time.monotonic_ns())
+            response.success = True
+            response.message = f'{side} manual start requested'
+        else:
+            if self.mode[side] == self.IDLE:
+                response.success = False
+                response.message = f'{side} already idle'
+                return response
+            future = self.pending_start_futures[side]
+            if future is not None and not future.done():
+                future.cancel()
+            self._deactivate(side, 'USER_STOP')
+            response.success = True
+            response.message = f'{side} manual stop requested'
+        return response
 
     def _positive_parameter(self, name: str) -> float:
         value = float(self.get_parameter(name).value)
@@ -476,6 +521,20 @@ class PikaTeleopPublisher(Node):
         for side in self.SIDES:
             pose, gripper = self._side_samples(snapshot, side)
             usable = self._data_usable(pose, gripper)
+            if pose.valid and gripper.valid and not usable:
+                now_ns = time.monotonic_ns()
+                if now_ns - self._last_input_warning_ns[side] >= 1_000_000_000:
+                    self._last_input_warning_ns[side] = now_ns
+                    self.get_logger().warning(
+                        '%s INPUT_UNUSABLE pose_age_ms=%.1f gripper_age_ms=%.1f '
+                        'limit_ms=%.1f'
+                        % (
+                            side.upper(),
+                            self._freshness_age_ms(pose),
+                            self._freshness_age_ms(gripper),
+                            self.stale_stop_ms,
+                        )
+                    )
             self._process_pending_start(
                 side, control_time.nanoseconds, pose, usable
             )

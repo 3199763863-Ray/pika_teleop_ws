@@ -18,11 +18,13 @@ def generate_launch_description() -> LaunchDescription:
         'pika_config.yam',
     )
     start_pika_official = LaunchConfiguration('start_pika_official')
+    pika_ros_ws = LaunchConfiguration('pika_ros_ws')
+    left_serial_port = LaunchConfiguration('left_serial_port')
+    right_serial_port = LaunchConfiguration('right_serial_port')
     official_command = (
-        'source /opt/ros/humble/setup.bash && '
-        'source /home/lei/pika_ros/install/setup.bash && '
-        'exec bash '
-        '/home/lei/pika_ros/scripts/start_multi_sensor_whit_teleop.bash'
+        'source "$1/install/setup.bash" && '
+        'exec ros2 launch sensor_tools open_multi_sensor_with_teleop.launch.py '
+        'l_serial_port:="$2" r_serial_port:="$3"'
     )
 
     return LaunchDescription([
@@ -31,8 +33,18 @@ def generate_launch_description() -> LaunchDescription:
             default_value='false',
             description='Start the official Pika Sense collection nodes.',
         ),
+        DeclareLaunchArgument(
+            'pika_ros_ws',
+            default_value=os.path.join(os.path.expanduser('~'), 'pika_ros'),
+            description='Path to the official Pika ROS workspace.',
+        ),
+        DeclareLaunchArgument('left_serial_port', default_value='/dev/ttyUSB50'),
+        DeclareLaunchArgument('right_serial_port', default_value='/dev/ttyUSB51'),
         ExecuteProcess(
-            cmd=['bash', '-c', official_command],
+            cmd=[
+                'bash', '-c', official_command, 'bash', pika_ros_ws,
+                left_serial_port, right_serial_port,
+            ],
             condition=IfCondition(start_pika_official),
             output='screen',
         ),

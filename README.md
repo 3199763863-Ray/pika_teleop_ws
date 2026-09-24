@@ -526,10 +526,10 @@ Session Manager 自动使用的 Recorder 命令只有 `PREPARE`、`START`、`STO
 正式配置路径：
 
 ```text
-/home/lei/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
+~/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
 ```
 
-若仓库部署到其他路径，launch 会从 package share 查找该配置，但官方 Pika 启动命令当前仍固定使用 `/home/lei/pika_ros`。
+launch 从 package share 查找该配置；官方 Pika 工作区默认位于当前用户的 `~/pika_ros`，也可通过 `pika_ros_ws:=/实际路径` 指定。
 
 ### 默认固定 TCP
 
@@ -587,8 +587,8 @@ connect = false
 - ROS 2 Humble；
 - Python 3.10；
 - `colcon`；
-- Pika 官方 ROS 工作区：`/home/lei/pika_ros`；
-- 本项目工作区：`/home/lei/pika_teleop_ws`。
+- Pika 官方 ROS 工作区：`~/pika_ros`；
+- 本项目工作区：`~/pika_teleop_ws`。
 
 真实联调还要求：
 
@@ -602,7 +602,7 @@ connect = false
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 
 ros2 interface show realman_msgs/action/ExecuteMotion
 ros2 interface show realman_recording_msgs/srv/ManageRecording
@@ -611,10 +611,10 @@ ros2 interface show realman_recording_msgs/srv/ManageRecording
 ## 构建方法
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ```
 
 当前工作区完整构建应包含 8 个 package。
@@ -623,7 +623,7 @@ source /home/lei/pika_teleop_ws/install/setup.bash
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ```
 
 可用以下命令确认 package 和 executable：
@@ -650,7 +650,7 @@ ros2 pkg executables pika_realman_mapper
 推荐使用：
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -668,7 +668,7 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py
 仅当官方节点尚未运行时使用：
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -676,13 +676,9 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py \
   start_pika_official:=true
 ```
 
-该选项会执行：
+该选项会从 `pika_ros_ws` 指定的目录加载 `install/setup.bash`，然后启动官方 `sensor_tools/open_multi_sensor_with_teleop.launch.py`。
 
-```bash
-source /opt/ros/humble/setup.bash
-source /home/lei/pika_ros/install/setup.bash
-bash /home/lei/pika_ros/scripts/start_multi_sensor_whit_teleop.bash
-```
+`pika_ros_ws` 默认是当前用户的 `~/pika_ros`，其他位置可追加 `pika_ros_ws:=/实际路径`。左右串口默认沿用 `/dev/ttyUSB50`、`/dev/ttyUSB51`，可分别通过 `left_serial_port:=/设备路径`、`right_serial_port:=/设备路径` 指定。先确认物理左右对应关系和当前用户的串口权限，再启用官方节点。手动执行原官方脚本时，它仍会调用 `sudo chmod`。
 
 如果官方节点已经启动，不要再次传 `start_pika_official:=true`。
 
@@ -690,8 +686,8 @@ bash /home/lei/pika_ros/scripts/start_multi_sensor_whit_teleop.bash
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_ros/install/setup.bash
-cd /home/lei/pika_ros/scripts
+source ~/pika_ros/install/setup.bash
+cd ~/pika_ros/scripts
 bash start_multi_sensor_whit_teleop.bash
 ```
 
@@ -918,7 +914,7 @@ Recorder START 成功后返回的 `session_id` 会打印在 Session Manager 和 
 - `/recording/status`；
 - START response 中的 `session_id`。
 
-不要在本地工作区中寻找 rosbag；当前正式流程不会在 `/home/lei/pika_teleop_ws` 下创建录制文件。
+不要在本地工作区中寻找 rosbag；当前正式流程不会在 `~/pika_teleop_ws` 下创建录制文件。
 
 ## Virtual Receiver 测试模式
 
@@ -930,7 +926,7 @@ Recorder START 成功后返回的 `session_id` 会打印在 Session Manager 和 
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ros2 run pika_teleop_virtual_receiver virtual_receiver
 ```
 
@@ -938,7 +934,7 @@ ros2 run pika_teleop_virtual_receiver virtual_receiver
 
 ```bash
 source /opt/ros/humble/setup.bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ros2 run pika_teleop_bridge pika_teleop_publisher --ros-args \
   -p use_session_gate:=false
 ```
@@ -989,8 +985,8 @@ Virtual Receiver：
 
 | 报错/现象 | 原因 | 处理方法 |
 |---|---|---|
-| `The passed message type is invalid` | 当前终端没有 source 新工作区，CLI 不认识自定义接口；或手写类型错误 | `source /opt/ros/humble/setup.bash` 后再 `source /home/lei/pika_teleop_ws/install/setup.bash`；推荐 echo 时不手写类型 |
-| `Package 'pika_...' not found` | 未构建、未 source，或 source 了错误工作区 | 回到 `/home/lei/pika_teleop_ws` 执行 `colcon build --symlink-install`，然后 source `install/setup.bash` |
+| `The passed message type is invalid` | 当前终端没有 source 新工作区，CLI 不认识自定义接口；或手写类型错误 | `source /opt/ros/humble/setup.bash` 后再 `source ~/pika_teleop_ws/install/setup.bash`；推荐 echo 时不手写类型 |
+| `Package 'pika_...' not found` | 未构建、未 source，或 source 了错误工作区 | 回到 `~/pika_teleop_ws` 执行 `colcon build --symlink-install`，然后 source `install/setup.bash` |
 | `No executable found` | package 尚未重新构建，或 executable 名称错误 | 重建并检查 `ros2 pkg executables <package>` |
 | launch file not found | Bringup 未构建或终端仍使用旧 overlay | 重建 `pika_teleop_bringup` 并重新 source |
 | 自定义 `msg/srv/action` 无法显示 | `pika_teleop_interfaces`、`realman_msgs` 或 `realman_recording_msgs` 未构建/source | 完整构建工作区并重新打开终端 |
@@ -1071,7 +1067,7 @@ Virtual Receiver：
 
 | 现象 | 原因 | 处理方法 |
 |---|---|---|
-| 官方 Topic 不存在 | 官方采集脚本未启动、环境未 source 或 Sense 未识别 | source `/home/lei/pika_ros/install/setup.bash` 后启动官方脚本，检查 USB 连接 |
+| 官方 Topic 不存在 | 官方采集脚本未启动、环境未 source 或 Sense 未识别 | source `~/pika_ros/install/setup.bash` 后启动官方脚本，检查 USB 连接 |
 | Topic 重复或设备异常 | 官方脚本被重复启动 | 只保留一组官方节点；已启动时不要使用 `start_pika_official:=true` |
 | 官方 Topic 有数据但 age 持续过大 | 发布频率、时间戳或虚拟机性能异常 | 检查 `ros2 topic hz`、时间戳、CPU 和 USB passthrough |
 
@@ -1141,7 +1137,7 @@ rosbag2_*/
 提交前还应确认：
 
 - 仓库中没有机器人账号、密码、IP 密钥或私有证书；
-- `/home/lei/...` 等部署路径是否需要改成团队通用路径；
+- 官方 Pika 工作区不在 `~/pika_ros` 时，启动命令是否设置了 `pika_ros_ws`；
 - GitHub 仓库根目录包含合适的 `LICENSE`；
 - `realman_msgs`、`realman_recording_msgs` 的分发权限允许上传；
 - 默认关节角和 TCP 是否属于可公开的设备配置；

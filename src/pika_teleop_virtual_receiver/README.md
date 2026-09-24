@@ -117,10 +117,10 @@ message="START rejected by virtual receiver"
 ## 构建
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ```
 
 ## 推荐运行顺序
@@ -136,14 +136,14 @@ bash start_multi_sensor_whit_teleop.bash
 终端 2：先启动 Virtual Receiver，提供 Service Server：
 
 ```bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ros2 run pika_teleop_virtual_receiver virtual_receiver
 ```
 
 终端 3：再启动 Teleop Publisher：
 
 ```bash
-source /home/lei/pika_teleop_ws/install/setup.bash
+source ~/pika_teleop_ws/install/setup.bash
 ros2 run pika_teleop_bridge pika_teleop_publisher
 ```
 

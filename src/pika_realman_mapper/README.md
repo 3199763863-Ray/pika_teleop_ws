@@ -25,7 +25,7 @@ q_target = q_delta_base * q_rm_default
 默认 TCP 位姿与全部运行参数来自：
 
 ```text
-/home/lei/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
+~/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
 ```
 
 四元数统一使用 `xyzw`，节点启动时会检查有限值并归一化默认姿态。缺少默认 TCP 数组会直接启动失败，避免退回隐含零位。
@@ -52,7 +52,7 @@ Bridge state 输入使用 `BEST_EFFORT + VOLATILE + KEEP_LAST depth=1`；六个 
 推荐通过 bringup 启动，确保加载共享配置：
 
 ```bash
-cd /home/lei/pika_teleop_ws
+cd ~/pika_teleop_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch pika_teleop_bringup pika_teleop.launch.py
