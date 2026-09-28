@@ -21,9 +21,9 @@ pika_realman_mapper:
     translation_scale_left: 1.0
     translation_scale_right: 1.0
     left_gripper_closed_position: 0.0
-    left_gripper_open_position: 0.1
+    left_gripper_open_position: 0.0967
     right_gripper_closed_position: 0.0
-    right_gripper_open_position: 0.1
+    right_gripper_open_position: 0.0967
     velocity_filter_cutoff_hz: 10.0
     velocity_max_dt_ms: 150.0
 

@@ -93,6 +93,12 @@ class TargetVelocityEstimator:
             previous + alpha * (current_value - previous)
             for previous, current_value in zip(self._filtered, raw)
         ]
+        linear_norm = math.sqrt(sum(value * value for value in self._filtered[:3]))
+        angular_norm = math.sqrt(sum(value * value for value in self._filtered[3:]))
+        if linear_norm < 0.02:
+            self._filtered[:3] = [0.0, 0.0, 0.0]
+        if angular_norm < 0.03:
+            self._filtered[3:] = [0.0, 0.0, 0.0]
         twist = Twist()
         twist.linear.x, twist.linear.y, twist.linear.z = self._filtered[:3]
         twist.angular.x, twist.angular.y, twist.angular.z = self._filtered[3:]
