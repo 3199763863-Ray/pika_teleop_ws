@@ -58,7 +58,7 @@ Pika +X、+Y、-Z 分别映射为命令坐标系 +Z、+Y、+X；Pika 转动后�
 
 - `/pika/l|r/cartesian_pose`，`geometry_msgs/msg/PoseStamped`
 - `/pika/l|r/cartesian_velocity`，`geometry_msgs/msg/TwistStamped`；`frame_id` 分别由 `left_velocity_frame/right_velocity_frame` 指定
-- `/pika/l|r/gripper_percentage`，`std_msgs/msg/Float32`（按 `gripper_publish_rate_hz` 限频，默认 4 Hz；夹爪每次触发都会重启运动，更高频率会让夹爪几乎不动）
+- `/pika/l|r/gripper_percentage`，`std_msgs/msg/Float32`
 
 `cartesian_pose` 和 `cartesian_velocity` 的数值均按各自配置的命令坐标系表达。当前配置中同一侧的 Pose 与速度使用同一坐标系；
 下游不得把速度分量解释为其他坐标系。

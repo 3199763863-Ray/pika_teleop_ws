@@ -16,10 +16,10 @@
 | ROS Domain | `65` |
 | 遥操工作区 | `/home/user2/pika_teleop_ws` |
 | 官方 Pika 工作区 | `/home/user2/pika_ros` |
-| 左 Sense 串口 | `/dev/ttyUSB0` |
-| 右 Sense 串口 | `/dev/ttyUSB1` |
+| 左 Sense 串口 | `/dev/pika_gripper_left` |
+| 右 Sense 串口 | `/dev/pika_gripper_right` |
 
-当前不使用 `ttyUSB50/51` 固定别名。`ttyUSB0/1` 可能在设备重插或重启后交换，启动前应使用 `ls -l /dev/ttyUSB*` 确认设备存在，并在方向异常时核对左右顺序。
+左右夹爪使用本机 udev 固定别名，底层 `ttyUSB0/1` 即使在设备重插或重启后交换，也不会改变 launch 的左右关系。两个 CH341 芯片没有唯一序列号，规则按物理 USB 插口识别，因此左右线缆必须保持在已标定的插口。
 
 每个新终端先加载环境：
 
@@ -155,14 +155,13 @@ pika_delta_fixed = pika_current_position - pika_start_position
 pika_delta_start_frame = inverse(R(pika_start_orientation))
                        * pika_delta_fixed
 target_position = rm_start_position
-                + R(rm_start_orientation)
-                * R(base_from_pika)
+                + R(base_from_pika)
                 * translation_scale
                 * pika_delta_start_frame
 ```
 
-位置差首先转入启动时的 Pika 局部坐标系，再应用轴映射并从 RealMan 起始 TCP 坐标系展开。
-起始 Pika +X、+Y、-Z 对应起始 RealMan TCP +Z、+Y、+X。当前位置仍然是相对起点计算，
+位置差首先转入启动时的 Pika 局部坐标系，再应用轴映射到配置的 RealMan 命令坐标系。
+Pika +X、+Y、-Z 对应命令坐标系 +Z、+Y、+X。当前位置仍然是相对起点计算，
 不逐帧累计；只在原点旋转手柄不会改变目标位置。
 
 姿态由 `orientation_mapping_mode` 选择。正式和 Bag 配置当前都使用 `relative`，
@@ -182,16 +181,13 @@ Bridge 执行所需的固定坐标变换 `(x, y, z) -> (-z, y, x)`，即 Pika +X
 
 ### 6. 速度生成
 
-Mapper 使用最近 `velocity_derivative_window_samples` 个目标 Pose 和 Pika 源时间戳，在基坐标系中求导和平滑，
-最后将线速度和角速度换算到当前目标 TCP 坐标系。`cartesian_velocity` 使用 `left_velocity_frame/right_velocity_frame`，
-当前为 `l/link_6`、`r/link_6`；Pose 仍使用 `left_base_frame/right_base_frame`。
+Mapper 使用最近 `velocity_derivative_window_samples` 个目标 Pose 和 Pika 源时间戳，在配置的命令坐标系中求导和平滑。
+`cartesian_velocity` 使用 `left_velocity_frame/right_velocity_frame`，其数值与对应 `frame_id` 保持一致；
+Pose 使用 `left_base_frame/right_base_frame`。当前配置中同一侧的 Pose 与速度使用同一命令坐标系。
 
-当前 Pika 自身 +X、+Y、-Z 速度对应当前 RealMan 末端 +Z、+Y、+X，即使手柄已经转动也保持该关系。
-滤波历史保留在稳定的基坐标系，避免把不同姿态下的局部分量直接混合。TCP 坐标只是速度的表达方向，
-线速度仍指 TCP 原点的速度；不添加因世界原点到 TCP 距离而产生的旋转项。
-Mapper 不读取机械臂实测 TF，当前 TCP 姿态来自相对映射目标；控制端按自身当前 TCP 坐标解释速度。
-`velocity_frame` 只指定坐标系名称，不增加工具安装旋转；工具轴若与 `link_6` 不同，需另行标定轴映射。
-当前这组轴对应关系使用 `relative` 姿态模式。方向快速变化时，求导窗口和滤波会造成短暂的响应滞后。
+Pika +X、+Y、-Z 速度对应命令坐标系 +Z、+Y、+X。Pika 转动后的实际位移方向仍会反映到命令分量中。
+滤波历史和发布分量始终处于同一稳定坐标系，避免把不同姿态下的局部分量混合或把 TCP 分量误标成基坐标系。
+方向快速变化时，求导窗口和滤波会造成短暂的响应滞后。
 
 输出单位：
 
@@ -371,7 +367,8 @@ source /opt/ros/humble/setup.bash
 source ~/pika_ros/install/setup.bash
 export ROS_DOMAIN_ID=65
 ros2 launch sensor_tools open_multi_sensor_with_teleop.launch.py \
-  l_serial_port:=/dev/ttyUSB0 r_serial_port:=/dev/ttyUSB1
+  l_serial_port:=/dev/pika_gripper_left \
+  r_serial_port:=/dev/pika_gripper_right
 ```
 
 终端 2，正式模式：

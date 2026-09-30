@@ -1,4 +1,4 @@
-"""Estimate target TCP velocity expressed in the current TCP frame."""
+"""Estimate target velocity expressed in the configured command frame."""
 
 from collections import deque
 import math
@@ -6,11 +6,11 @@ import math
 from geometry_msgs.msg import Pose, Twist
 
 from .pose_mapper import pose_values
-from .quaternion_utils import inverse, multiply, rotate_vector, shortest
+from .quaternion_utils import inverse, multiply, shortest
 
 
 class TargetVelocityEstimator:
-    """Differentiate and filter in the base frame, then express in the TCP."""
+    """Differentiate and filter target poses in their command frame."""
 
     def __init__(
         self,
@@ -152,17 +152,6 @@ class TargetVelocityEstimator:
             result.append(estimate)
         return tuple(result)
 
-    def _express_in_current_tcp(self, orientation) -> None:
-        # Rotate the velocity at the TCP origin, not a spatial twist at the
-        # base origin. Pure rotation must not create a linear velocity.
-        tcp_from_base = inverse(orientation)
-        linear = rotate_vector(tcp_from_base, tuple(self._filtered[:3]))
-        angular = rotate_vector(tcp_from_base, tuple(self._filtered[3:]))
-        twist = Twist()
-        twist.linear.x, twist.linear.y, twist.linear.z = linear
-        twist.angular.x, twist.angular.y, twist.angular.z = angular
-        self._twist = twist
-
     def update(self, target_pose: Pose, source_stamp_ns: int) -> bool:
         try:
             current = pose_values(target_pose)
@@ -180,7 +169,6 @@ class TargetVelocityEstimator:
         if step_dt_ns <= 0 or step_dt_ns > self.max_dt_ns:
             return self._rebaseline(current, stamp_ns)
         if step_dt_ns < self.min_dt_ns:
-            self._express_in_current_tcp(current[1])
             return False
         self._samples.append((current, stamp_ns))
         if len(self._samples) < self.derivative_window_samples:
@@ -236,8 +224,9 @@ class TargetVelocityEstimator:
             self._filtered[3:] = [0.0, 0.0, 0.0]
             self._kalman_state[3:] = [0.0, 0.0, 0.0]
             self._kalman_covariance[3:] = [0.0, 0.0, 0.0]
-        # Filter states stay in one stable base frame across all samples.
-        # Only the published components follow the latest TCP orientation.
-        self._express_in_current_tcp(current_orientation)
+        twist = Twist()
+        twist.linear.x, twist.linear.y, twist.linear.z = self._filtered[:3]
+        twist.angular.x, twist.angular.y, twist.angular.z = self._filtered[3:]
+        self._twist = twist
         self._valid = True
         return True

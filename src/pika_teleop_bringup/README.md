@@ -46,7 +46,7 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py
 ros2 launch pika_teleop_bringup pika_teleop.launch.py start_pika_official:=true
 ```
 
-官方 Pika 工作区默认为当前用户的 `~/pika_ros`。若安装在其他位置，追加 `pika_ros_ws:=/实际路径`。左右串口默认是 `/dev/ttyUSB0` 和 `/dev/ttyUSB1`，可用 `left_serial_port:=/设备路径`、`right_serial_port:=/设备路径` 覆盖。启动项直接调用官方 `open_multi_sensor_with_teleop.launch.py`，无需执行官方脚本中的 `sudo chmod`。Bag launch 支持相同参数。当前不使用 `ttyUSB50/51` 固定别名；重插设备后应先确认 `ttyUSB0/1` 的左右顺序。
+官方 Pika 工作区默认为当前用户的 `~/pika_ros`。若安装在其他位置，追加 `pika_ros_ws:=/实际路径`。左右串口默认使用 `/dev/pika_gripper_left` 和 `/dev/pika_gripper_right` 固定别名，可用 `left_serial_port:=/设备路径`、`right_serial_port:=/设备路径` 覆盖。别名由本机 udev 规则按物理 USB 插口生成，不受 `ttyUSB0/1` 枚举顺序影响；两个夹爪的 CH341 芯片没有唯一序列号，因此左右线缆必须保持在已标定的物理插口。启动项直接调用官方 `open_multi_sensor_with_teleop.launch.py`，无需执行官方脚本中的 `sudo chmod`。Bag launch 支持相同参数。
 
 官方节点已运行时不要再传 `true`。正式 launch 不启动 `pika_teleop_virtual_receiver`。
 

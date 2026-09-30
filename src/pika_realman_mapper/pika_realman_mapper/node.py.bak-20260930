@@ -52,7 +52,6 @@ class SideRuntime:
     last_processed_pose_stamp_ns: Optional[int] = None
     target_pose: Optional[Pose] = None
     gripper_filtered: Optional[float] = None
-    gripper_last_publish_ns: int = 0
 
     @property
     def session_initialized(self) -> bool:
@@ -73,9 +72,6 @@ class PikaRealManMapper(Node):
         self.state_timeout_ms = self._positive_parameter('state_timeout_ms')
         gripper_filter_cutoff_hz = self._positive_parameter(
             'gripper_filter_cutoff_hz'
-        )
-        self._gripper_publish_period_ns = int(
-            1e9 / self._positive_parameter('gripper_publish_rate_hz')
         )
         command_dt = 1.0 / self.command_rate_hz
         gripper_tau = 1.0 / (2.0 * math.pi * gripper_filter_cutoff_hz)
@@ -252,9 +248,6 @@ class PikaRealManMapper(Node):
         self.declare_parameter('command_rate_hz', 100.0)
         self.declare_parameter('state_timeout_ms', 100.0)
         self.declare_parameter('gripper_filter_cutoff_hz', 10.0)
-        # The Changingtek gripper restarts its motion profile on every trigger,
-        # so targets faster than ~4 Hz stall it; publish the gripper at this rate.
-        self.declare_parameter('gripper_publish_rate_hz', 4.0)
         self.declare_parameter('left_base_frame', 'l/base_link')
         self.declare_parameter('right_base_frame', 'r/base_link')
         self.declare_parameter('left_velocity_frame', 'l/work/pikabase')
@@ -557,10 +550,7 @@ class PikaRealManMapper(Node):
         velocity_message.twist = runtime.velocity.twist
         runtime.pose_publisher.publish(pose_message)
         runtime.velocity_publisher.publish(velocity_message)
-        now_ns = time.monotonic_ns()
-        if now_ns - runtime.gripper_last_publish_ns >= self._gripper_publish_period_ns:
-            runtime.gripper_publisher.publish(Float32(data=runtime.gripper_filtered))
-            runtime.gripper_last_publish_ns = now_ns
+        runtime.gripper_publisher.publish(Float32(data=runtime.gripper_filtered))
 
     def _command_tick(self) -> None:
         now_ns = time.monotonic_ns()

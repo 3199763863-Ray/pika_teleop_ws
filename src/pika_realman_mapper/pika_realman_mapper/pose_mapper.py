@@ -135,9 +135,6 @@ class PoseMapper:
                 pika_delta_start_frame,
             )
         )
-        # Relative motion is applied in the robot's starting TCP frame.
-        # This makes the resulting pose and current-TCP velocity consistent.
-        base_delta = rotate_vector(rm_start_orientation, base_delta)
         target_position = tuple(
             start + delta
             for start, delta in zip(rm_start_position, base_delta)

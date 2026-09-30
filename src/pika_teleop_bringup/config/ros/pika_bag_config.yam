@@ -3,7 +3,7 @@ pika_teleop_publisher:
     velocity_max_dt_ms: 150.0
     state_rate_hz: 20.0
     use_session_gate: false
-    stale_stop_ms: 500.0
+    stale_stop_ms: 2000.0
     start_service_timeout_ms: 10000.0
 
 pika_realman_mapper:

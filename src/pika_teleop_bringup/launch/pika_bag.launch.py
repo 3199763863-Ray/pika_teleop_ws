@@ -1,5 +1,6 @@
 """Start the lightweight Pika Bag/Demo stack without production services."""
 
+import datetime
 import os
 import glob
 import sys
@@ -7,8 +8,11 @@ import sys
 from ament_index_python.packages import (
     get_package_prefix, get_package_share_directory,
 )
+import launch.logging
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import (
+    DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -34,6 +38,29 @@ def _local_python_path(packages):
     return os.pathsep.join(dict.fromkeys(paths))
 
 
+def _announce_log_dir(context):
+    """Point out where this run is logged and refresh a stable latest link.
+
+    Every node/process runs with output='both', so its stdout/stderr (including
+    the warnings that explain why a session stopped, e.g. POSE_JUMP_STOP,
+    STALE_STOP, USER_STOP) go to the terminal AND to launch.log in this run's
+    log directory under ~/.ros/log/<timestamp>-...
+    """
+    log_dir = launch.logging.launch_config.log_dir
+    latest = os.path.join(os.path.expanduser('~'), '.ros', 'log', 'pika_teleop_latest')
+    try:
+        if os.path.islink(latest) or os.path.exists(latest):
+            os.remove(latest)
+        os.symlink(log_dir, latest)
+        with open(os.path.join(log_dir, 'run_info.txt'), 'w', encoding='utf-8') as stream:
+            stream.write('launch_file=%s\n' % __file__)
+            stream.write('started=%s\n' % datetime.datetime.now().isoformat())
+            stream.write('argv=%s\n' % ' '.join(sys.argv))
+    except OSError:
+        pass
+    return [LogInfo(msg='Pika teleop logs: %s (link: %s)' % (log_dir, latest))]
+
+
 def generate_launch_description() -> LaunchDescription:
     config_path = os.path.join(
         get_package_share_directory('pika_teleop_bringup'),
@@ -46,9 +73,12 @@ def generate_launch_description() -> LaunchDescription:
     left_serial_port = LaunchConfiguration('left_serial_port')
     right_serial_port = LaunchConfiguration('right_serial_port')
     local_env = {'PYTHONPATH': _local_python_path((
+        'pika_teleop_bringup',
         'pika_teleop_bridge', 'pika_realman_mapper',
         'pika_teleop_virtual_receiver', 'pika_teleop_interfaces',
     ))}
+    # Flush Python stdout immediately so a crash or Ctrl-C loses no log lines.
+    local_env['PYTHONUNBUFFERED'] = '1'
     official_command = (
         'source "$1/install/setup.bash" && '
         'exec ros2 launch sensor_tools open_multi_sensor_with_teleop.launch.py '
@@ -56,6 +86,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     return LaunchDescription([
+        OpaqueFunction(function=_announce_log_dir),
         DeclareLaunchArgument(
             'start_pika_official',
             default_value='false',
@@ -66,15 +97,27 @@ def generate_launch_description() -> LaunchDescription:
             default_value=os.path.join(os.path.expanduser('~'), 'pika_ros'),
             description='Path to the official Pika ROS workspace.',
         ),
-        DeclareLaunchArgument('left_serial_port', default_value='/dev/ttyUSB0'),
-        DeclareLaunchArgument('right_serial_port', default_value='/dev/ttyUSB1'),
+        DeclareLaunchArgument(
+            'left_serial_port', default_value='/dev/pika_gripper_left'
+        ),
+        DeclareLaunchArgument(
+            'right_serial_port', default_value='/dev/pika_gripper_right'
+        ),
         ExecuteProcess(
             cmd=[
-                'bash', '-c', official_command, 'bash', pika_ros_ws,
+                sys.executable, '-m',
+                'pika_teleop_bringup.official_stack_supervisor',
+                '--interrupt-timeout', '10.0',
+                '--terminate-timeout', '3.0',
+                '--', 'bash', '-c', official_command, 'bash', pika_ros_ws,
                 left_serial_port, right_serial_port,
             ],
             condition=IfCondition(start_pika_official),
-            output='screen',
+            additional_env=local_env,
+            output='both',
+            # Allow the supervisor to stop the full official process group.
+            sigterm_timeout='15.0',
+            sigkill_timeout='5.0',
         ),
         Node(
             package='pika_teleop_virtual_receiver',
@@ -82,7 +125,7 @@ def generate_launch_description() -> LaunchDescription:
             name='pika_teleop_virtual_receiver',
             parameters=[config_path],
             additional_env=local_env,
-            output='screen',
+            output='both',
         ),
         Node(
             package='pika_teleop_bridge',
@@ -90,7 +133,7 @@ def generate_launch_description() -> LaunchDescription:
             name='pika_teleop_publisher',
             parameters=[config_path],
             additional_env=local_env,
-            output='screen',
+            output='both',
         ),
         Node(
             package='pika_realman_mapper',
@@ -98,6 +141,6 @@ def generate_launch_description() -> LaunchDescription:
             name='pika_realman_mapper',
             parameters=[config_path],
             additional_env=local_env,
-            output='screen',
+            output='both',
         ),
     ])
