@@ -1,51 +1,51 @@
 # Pika RealMan Mapper
 
-`pika_realman_mapper` 把左右 `PikaTeleopState` 映射为 RealMan 笛卡尔目标。位置始终采用相对启动零位映射，姿态可选绝对或相对模式。节点不访问 RealMan TF、不管理录制、不调用机械臂 Action/SDK，也不提供启停 Service。
+`pika_realman_mapper` 把左右 `PikaTeleopState` 映射为 RealMan 笛卡尔目标。速度是主要控制接口；Pose Topic 继续保留，供兼容和调试使用。
 
-## 位姿模式
+## 坐标流程
 
-位置始终按启动零位计算：
+节点启动后，用左右 Pika 的一段稳定同步数据建立一个共用 Pika 基准：
 
-```text
-delta_p_fixed = p_current - p_start
-delta_p_start_frame = inverse(R_pika_start) * delta_p_fixed
-delta_p_base = scale * R_base_from_pika * delta_p_start_frame
-p_target = p_rm_default + delta_p_base
-```
+- 原点：左右 Pika 原点的中点。
+- Y 正方向：左 Pika 原点指向右 Pika 原点。
+- Z 正方向：竖直向上，依据官方 Pika `base_link` 的 Z 轴。
+- X 正方向：由 `X = Y × Z` 得到，安装正确时指向后方。
 
-位置差会先转入启动时的 Pika 局部坐标系，再映射到配置的 RealMan 命令坐标系。
-Pose 保持相对启动零位；原地旋转手柄不产生位置变化。节点不读取机械臂实测 TF。
+这个基准只在节点启动后标定一次。左右输入先转换到该基准，手柄自身姿态不会旋转线速度坐标轴。
 
-姿态由 `orientation_mapping_mode` 选择。正式和 Bag 配置当前使用相对姿态。
-启动时记录完整的 Pika 位姿和默认 TCP 位姿，后续相对变化均按固定起点计算，不逐帧累计：
+每次双击启用某一侧遥操时，正式模式读取一次 TF：
 
 ```text
-q_delta_pika = inverse(q_start) * q_current
-q_delta_base = q_map * q_delta_pika * inverse(q_map)
-q_target = q_rm_default * q_delta_base
+l/base_link <- l/link_6
+r/base_link <- r/link_6
 ```
 
-Bridge 已按目标坐标关系将原始 Pika 坐标变为 `(-z, y, x)`：Pika +X
-对应 RealMan +Z，Pika -Z 对应 RealMan +X，Y 轴不变。Mapper 的默认
-`q_map = [0.0, 0.0, 0.0, 1.0]`（xyzw）为单位旋转，避免重复变换。
-
-默认 TCP 位姿与全部运行参数来自：
+节点把该侧当前 Pika 原点与当前 RealMan TCP 原点重合，并发布动态虚拟 TF：
 
 ```text
-~/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
+l/base_link -> l_pika_base_link
+r/base_link -> r_pika_base_link
 ```
 
-四元数统一使用 `xyzw`，节点启动时会检查有限值并归一化默认姿态。缺少默认 TCP 数组会直接启动失败，避免退回隐含零位。
+虚拟坐标系的轴与 RealMan 基座轴平行。TF 只用于建立启动原点，运行中不持续读取 TCP 姿态。正式模式缺少对应 TF 时，该侧保持等待，不建立遥操 session；Bag 模式使用配置中的默认 TCP 位姿作为回退。
 
-## 速度平滑
+## 位置、姿态与速度
 
-目标速度使用最近 `velocity_derivative_window_samples` 个目标 Pose 的首尾变化在机械臂基坐标系中求导。
-滤波和死区处理完成后，线速度与角速度保持在目标 Pose 所使用的命令坐标系中，与消息 `frame_id` 一致。
-Pika +X、+Y、-Z 分别映射为命令坐标系 +Z、+Y、+X；Pika 转动后的实际位移方向仍会反映到命令分量中。
-方向快速变化时，求导窗口和滤波会有短暂的响应滞后。
-两种速度均以 TCP 原点为作用点，原地旋转不会产生伪线速度。窗口未填满时输出 0；过短的样本间隔会被忽略，超时则清空窗口并重新建立基线。
+位置始终相对本次双击时的零位：
 
-原始六轴速度依次经过独立的一维卡尔曼滤波和一阶低通滤波。正式与 Bag 配置默认启用卡尔曼滤波，可通过 `velocity_kalman_enabled` 关闭。线速度和角速度分别提供过程方差、测量方差参数，随后再应用各自死区；死区触发时对应卡尔曼状态也会归零，持续小速度不会跨帧累计越过死区。
+```text
+Pika 当前位置 - Pika 启动位置
+-> translation_scale
+-> RealMan 启动 TCP 位置
+```
+
+位置差已经在与 RealMan 基座对齐的共用 Pika 基准中表达，不再乘手柄启动姿态，也不再增加固定的 90 度坐标变换。
+
+线速度使用最近 `velocity_derivative_window_samples` 个位置样本的首尾差求导。角速度使用同一窗口内 Pika 姿态的空间旋转变化求导，结果直接表达在对齐后的 RealMan 基座轴上。手柄当前姿态不会改变速度坐标轴；手柄真实的转动仍会产生相应的角速度。
+
+原始六轴速度依次经过独立的一维卡尔曼滤波、一阶低通滤波和死区。死区触发时对应滤波状态归零，因此持续小速度不会逐帧累计越过死区。角速度单位为 `rad/s`。
+
+`orientation_mapping_mode` 只控制兼容用 `/pika/l|r/cartesian_pose` 的姿态字段；它不改变速度坐标轴。`left/right_base_from_pika_quaternion_xyzw` 也只保留给该 Pose 姿态映射。
 
 ## 接口
 
@@ -53,23 +53,40 @@ Pika +X、+Y、-Z 分别映射为命令坐标系 +Z、+Y、+X；Pika 转动后�
 
 - `/pika_teleop/left/state`
 - `/pika_teleop/right/state`
+- 正式模式下的 `/tf`、`/tf_static`
 
 输出：
 
 - `/pika/l|r/cartesian_pose`，`geometry_msgs/msg/PoseStamped`
-- `/pika/l|r/cartesian_velocity`，`geometry_msgs/msg/TwistStamped`；`frame_id` 分别由 `left_velocity_frame/right_velocity_frame` 指定
-- `/pika/l|r/gripper_percentage`，`std_msgs/msg/Float32`（按 `gripper_publish_rate_hz` 限频，默认 4 Hz；夹爪每次触发都会重启运动，更高频率会让夹爪几乎不动）
+- `/pika/l|r/cartesian_velocity`，`geometry_msgs/msg/TwistStamped`
+- `/pika/l|r/gripper_percentage`，`std_msgs/msg/Float32`
+- `l_pika_base_link`、`r_pika_base_link` 虚拟 TF
 
-`cartesian_pose` 和 `cartesian_velocity` 的数值均按各自配置的命令坐标系表达。当前配置中同一侧的 Pose 与速度使用同一坐标系；
-下游不得把速度分量解释为其他坐标系。
+现有 Pose 和速度 Topic 的 `frame_id` 仍分别由 `left/right_base_frame` 与 `left/right_velocity_frame` 指定，本次坐标标定不会重命名它们。
 
-Bridge state 输入使用 `BEST_EFFORT + VOLATILE + KEEP_LAST depth=1`；六个 RealMan command 输出按照接收端接口约定使用 `RELIABLE + VOLATILE + KEEP_LAST depth=1`。两套 QoS 分开定义，避免把 RELIABLE 错误地应用到上游 BEST_EFFORT state 订阅。
+## 主要配置
 
-输出仅在该侧 `enabled && valid`、state watchdog 正常且数值合法时发布。STOP、invalid 或 watchdog timeout 会清除 session reference 和速度状态并停止该侧输出。RealMan 接收端仍必须实现 command watchdog、限位、急停和 SDK 安全控制。
+- `require_realman_start_tf`：正式模式为 `true`；Bag 模式为 `false`。
+- `left/right_tcp_frame`：启动时读取的 RealMan TCP TF 名称。
+- `left/right_pika_base_frame`：发布的左右虚拟 Pika 基准名称。
+- `pika_base_calibration_stable_samples`：启动标定所需连续样本数。
+- `pika_base_calibration_max_spread_m`：标定窗口内允许的最大手柄位置波动。
+- `pika_base_min_controller_separation_m`：左右 Pika 的最小水平间距。
+- `pika_base_pair_max_stamp_delta_ms`：左右样本允许的最大时间差。
+- `pika_vertical_axis_in_teleop_frame_xyz`：官方 Pika 竖直轴在 Bridge 输出坐标中的方向。
+- `translation_scale_left/right`：位置变化和线速度的缩放比例。
+- `velocity_derivative_window_samples`：线速度和角速度共同使用的求导窗口。
+- `velocity_filter_cutoff_hz`、`velocity_kalman_*`：速度滤波参数。
+- `linear_velocity_deadband_mps`、`angular_velocity_deadband_radps`：线速度和角速度死区。
+
+共享配置位于：
+
+```text
+~/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_config.yam
+~/pika_teleop_ws/src/pika_teleop_bringup/config/ros/pika_bag_config.yam
+```
 
 ## 运行
-
-推荐通过 bringup 启动，确保加载共享配置：
 
 ```bash
 cd ~/pika_teleop_ws
@@ -78,4 +95,4 @@ source install/setup.bash
 ros2 launch pika_teleop_bringup pika_teleop.launch.py
 ```
 
-真实动作前必须低速、空载逐轴确认 Pika 到左右 Base 的方向、默认 TCP 精度和夹爪标定。
+真实动作前应低速、空载逐轴检查 X/Y/Z 与旋转方向。

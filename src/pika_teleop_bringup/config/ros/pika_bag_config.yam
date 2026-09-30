@@ -12,7 +12,18 @@ pika_realman_mapper:
     state_timeout_ms: 200.0
     left_base_frame: "l/work/pikabase"
     right_base_frame: "r/work/pikabase"
-    # Velocity components use the current end-effector axes.
+    # A bag normally has no RealMan TF tree, so use the configured TCP fallback.
+    require_realman_start_tf: false
+    left_tcp_frame: "l/link_6"
+    right_tcp_frame: "r/link_6"
+    left_pika_base_frame: "l_pika_base_link"
+    right_pika_base_frame: "r_pika_base_link"
+    pika_base_calibration_stable_samples: 10
+    pika_base_calibration_max_spread_m: 0.01
+    pika_base_min_controller_separation_m: 0.10
+    pika_base_pair_max_stamp_delta_ms: 100.0
+    pika_vertical_axis_in_teleop_frame_xyz: [-1.0, 0.0, 0.0]
+    # Keep the established output frame_id strings.
     left_velocity_frame: "l/work/pikabase"
     right_velocity_frame: "r/work/pikabase"
     orientation_mapping_mode: "relative"
@@ -20,6 +31,7 @@ pika_realman_mapper:
     left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]
     right_default_tcp_position_m: [-0.299, 0.014, 0.319]
     right_default_tcp_orientation_xyzw: [0.989, -0.052, -0.047, 0.128]
+    # Used only by the compatibility cartesian_pose orientation output.
     left_base_from_pika_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
     right_base_from_pika_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
     translation_scale_left: 1.0

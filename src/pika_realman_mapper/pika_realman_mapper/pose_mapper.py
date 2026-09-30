@@ -11,7 +11,6 @@ from .quaternion_utils import (
     map_fixed_delta,
     multiply,
     normalize,
-    rotate_vector,
 )
 
 
@@ -62,7 +61,7 @@ def gripper_percentage(value: float, closed: float, opened: float) -> float:
 
 
 class PoseMapper:
-    """Map Pika poses into the configured robot base frame."""
+    """Map shared-base Pika poses from the session zero into robot targets."""
 
     VALID_ORIENTATION_MODES = ('relative', 'absolute')
 
@@ -117,22 +116,13 @@ class PoseMapper:
         pika_start_position, pika_start_orientation = self._pika_start
         rm_start_position, rm_start_orientation = self._rm_start
 
-        pika_delta_fixed = tuple(
-            current - start
+        # PikaBaseCalibrator has already expressed the position in axes aligned
+        # with the RealMan base.  Hand orientation must not rotate this delta.
+        base_delta = tuple(
+            (current - start) * self.translation_scale
             for current, start in zip(
                 current_position,
                 pika_start_position,
-            )
-        )
-        pika_delta_start_frame = rotate_vector(
-            inverse(pika_start_orientation),
-            pika_delta_fixed,
-        )
-        base_delta = tuple(
-            value * self.translation_scale
-            for value in rotate_vector(
-                self.mapping,
-                pika_delta_start_frame,
             )
         )
         target_position = tuple(
