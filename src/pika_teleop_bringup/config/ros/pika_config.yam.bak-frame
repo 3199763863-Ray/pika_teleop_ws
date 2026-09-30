@@ -12,8 +12,8 @@ pika_realman_mapper:
     left_base_frame: "l/base_link"
     right_base_frame: "r/base_link"
     # Velocity components use the current end-effector axes.
-    left_velocity_frame: "l/work/pikabase"
-    right_velocity_frame: "r/work/pikabase"
+    left_velocity_frame: "l/link_6"
+    right_velocity_frame: "r/link_6"
     orientation_mapping_mode: "relative"
     left_default_tcp_position_m: [-0.323, -0.028, 0.304]
     left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]

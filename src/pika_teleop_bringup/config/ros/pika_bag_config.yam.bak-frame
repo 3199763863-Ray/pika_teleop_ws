@@ -2,18 +2,19 @@ pika_teleop_publisher:
   ros__parameters:
     velocity_max_dt_ms: 150.0
     state_rate_hz: 20.0
-    use_session_gate: true
+    use_session_gate: false
+    stale_stop_ms: 200.0
     start_service_timeout_ms: 10000.0
 
 pika_realman_mapper:
   ros__parameters:
     command_rate_hz: 20.0
     state_timeout_ms: 200.0
-    left_base_frame: "l/base_link"
-    right_base_frame: "r/base_link"
+    left_base_frame: "l/work/pikabase"
+    right_base_frame: "r/work/pikabase"
     # Velocity components use the current end-effector axes.
-    left_velocity_frame: "l/work/pikabase"
-    right_velocity_frame: "r/work/pikabase"
+    left_velocity_frame: "l/link_6"
+    right_velocity_frame: "r/link_6"
     orientation_mapping_mode: "relative"
     left_default_tcp_position_m: [-0.323, -0.028, 0.304]
     left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]
@@ -39,20 +40,7 @@ pika_realman_mapper:
     linear_velocity_deadband_mps: 0.005
     angular_velocity_deadband_radps: 0.012
 
-pika_session_manager:
+pika_teleop_virtual_receiver:
   ros__parameters:
-    recording_service: "/recording/manage"
-    recording_status_topic: "/recording/status"
-    recording_profile: "teleop_v1"
-    recording_task: "pick_and_place"
-    recording_duration_sec: 0
-    record_cameras: true
-    prepare_retry_sec: 2.0
-    left_reset_action: "/l/execute_motion"
-    right_reset_action: "/r/execute_motion"
-    left_reset_joint_degrees: [12.172, 25.223, 73.054, -16.703, 80.307, 14.455]
-    middle_reset_joint_degrees: [0.0, 17.997, 70.0, 0.0, 90.0, 8.997]
-    right_reset_joint_degrees: [-9.89, 18.046, 79.074, 15.505, 79.606, -6.194]
-    reset_velocity_percent: 10
-    reset_blend_radius_percent: 0
-    reset_timeout_sec: 120.0
+    accept_start: true
+    state_timeout_ms: 200.0

@@ -16,10 +16,10 @@
 | ROS Domain | `65` |
 | 遥操工作区 | `/home/user2/pika_teleop_ws` |
 | 官方 Pika 工作区 | `/home/user2/pika_ros` |
-| 左 Sense 串口 | `/dev/ttyUSB50`，当前指向 `ttyUSB3` |
-| 右 Sense 串口 | `/dev/ttyUSB51`，当前指向 `ttyUSB2` |
+| 左 Sense 串口 | `/dev/ttyUSB0` |
+| 右 Sense 串口 | `/dev/ttyUSB1` |
 
-`/dev/ttyUSB50` 和 `/dev/ttyUSB51` 是本机固定入口。底层 `ttyUSB2/3` 可能因重插或重启变化，启动命令应继续使用固定入口。
+当前不使用 `ttyUSB50/51` 固定别名。`ttyUSB0/1` 可能在设备重插或重启后交换，启动前应使用 `ls -l /dev/ttyUSB*` 确认设备存在，并在方向异常时核对左右顺序。
 
 每个新终端先加载环境：
 
@@ -146,39 +146,66 @@ Virtual Receiver 直接接受启停请求，不连接 Recorder，也不执行回
 - 在 enabled/valid、watchdog 或数据异常变化时记录一次日志；
 - 默认不打印每秒完整摘要，避免终端和 ROS 日志持续刷写。
 
-### 5. 相对位姿映射
+### 5. 位姿映射模式
 
-每侧第一次收到 `enabled=true && valid=true` 的 State 时，Mapper 保存：
-
-- 当前 Pika 位姿作为 `pika_start`；
-- YAML 中配置的 RealMan TCP 位姿作为 `rm_start`。
-
-之后的目标始终由“当前 Pika 相对起点的变化”映射到固定 RealMan 起点，不做累计积分：
+位置始终按启动零位做相对映射，没有绝对位置选项。每侧启动时记录当前 Pika 位置作为 `pika_start_position`，并把 YAML 默认 TCP 位置作为 `rm_start_position`：
 
 ```text
+pika_delta_fixed = pika_current_position - pika_start_position
+pika_delta_start_frame = inverse(R(pika_start_orientation))
+                       * pika_delta_fixed
 target_position = rm_start_position
-                + R(base_from_pika)
+                + R(rm_start_orientation)
+                * R(base_from_pika)
                 * translation_scale
-                * (pika_current_position - pika_start_position)
+                * pika_delta_start_frame
 ```
 
-姿态使用相同的固定坐标映射处理 Pika 相对旋转，再作用到 `rm_start_orientation`。每次停止都会清空零位；再次启动重新采样 Pika 起点。
+位置差首先转入启动时的 Pika 局部坐标系，再应用轴映射并从 RealMan 起始 TCP 坐标系展开。
+起始 Pika +X、+Y、-Z 对应起始 RealMan TCP +Z、+Y、+X。当前位置仍然是相对起点计算，
+不逐帧累计；只在原点旋转手柄不会改变目标位置。
+
+姿态由 `orientation_mapping_mode` 选择。正式和 Bag 配置当前都使用 `relative`，
+即记录启动时的 Pika 姿态，并把相对旋转映射后叠加到默认 TCP 姿态：
+
+```text
+q_delta_pika = inverse(q_start) * q_current
+q_delta_base = q_map * q_delta_pika * inverse(q_map)
+target_orientation = rm_start_orientation * q_delta_base
+```
+
+Bridge 执行所需的固定坐标变换 `(x, y, z) -> (-z, y, x)`，即 Pika +X
+对应 RealMan +Z、Pika -Z 对应 RealMan +X，Y 轴保持不变。Mapper 使用单位旋转
+`[0.0, 0.0, 0.0, 1.0]`（xyzw），避免对 Bridge 输出重复旋转。
+
+每次停止都会清空位置和姿态零位；再次启动重新采样。
 
 ### 6. 速度生成
 
-Mapper 根据相邻目标位姿和 Pika 源时间戳求导，输出：
+Mapper 使用最近 `velocity_derivative_window_samples` 个目标 Pose 和 Pika 源时间戳，在基坐标系中求导和平滑，
+最后将线速度和角速度换算到当前目标 TCP 坐标系。`cartesian_velocity` 使用 `left_velocity_frame/right_velocity_frame`，
+当前为 `l/link_6`、`r/link_6`；Pose 仍使用 `left_base_frame/right_base_frame`。
+
+当前 Pika 自身 +X、+Y、-Z 速度对应当前 RealMan 末端 +Z、+Y、+X，即使手柄已经转动也保持该关系。
+滤波历史保留在稳定的基坐标系，避免把不同姿态下的局部分量直接混合。TCP 坐标只是速度的表达方向，
+线速度仍指 TCP 原点的速度；不添加因世界原点到 TCP 距离而产生的旋转项。
+Mapper 不读取机械臂实测 TF，当前 TCP 姿态来自相对映射目标；控制端按自身当前 TCP 坐标解释速度。
+`velocity_frame` 只指定坐标系名称，不增加工具安装旋转；工具轴若与 `link_6` 不同，需另行标定轴映射。
+当前这组轴对应关系使用 `relative` 姿态模式。方向快速变化时，求导窗口和滤波会造成短暂的响应滞后。
+
+输出单位：
 
 - 线速度：m/s；
 - 角速度：rad/s。
 
-速度经过一阶低通滤波。若相邻样本间隔无效或超过 `velocity_max_dt_ms`，估计器重新建立基线，本次速度标记无效。
+当前配置使用 5 点窗口，以窗口首尾 Pose 的变化除以总时间。启动后的前四帧只建立窗口并输出 0，避免第二帧立刻产生不稳定速度。相邻样本间隔小于 `velocity_min_dt_ms` 时忽略该样本；间隔超过 `velocity_max_dt_ms` 时清空窗口并重新建立基线。
 
-当前版本还有两个代码固定死区：
+原始速度依次经过六轴独立的一维卡尔曼滤波和一阶低通滤波。卡尔曼过程方差越大，响应越快、保留的波动越多；测量方差越大，抑制毛刺越强、响应越慢。`velocity_kalman_enabled` 可以单独关闭卡尔曼滤波。
 
-- 滤波后线速度向量模长 `< 0.02 m/s` 时，线速度三轴全部归零；
-- 滤波后角速度向量模长 `< 0.03 rad/s` 时，角速度三轴全部归零。
+当前版本提供两个可从正式/Bag YAML 调整的输出死区：
 
-这两个值目前不在 YAML 中，如需调整要修改 `pika_realman_mapper/velocity.py`。
+- 滤波后线速度向量模长 `< 0.005 m/s` 时，线速度三轴及对应卡尔曼状态归零；
+- 滤波后角速度向量模长 `< 0.012 rad/s` 时，角速度三轴及对应卡尔曼状态归零。
 
 ## ROS 2 接口
 
@@ -238,7 +265,7 @@ Mapper 节点启动后 Topic 会存在，但只有对应侧 State 同时满足 `
 |---|---:|---:|---|
 | `state_rate_hz` | 20 | 20 | State 发布和 Bridge 控制周期。增大可降低周期延迟，但增加 CPU、DDS 和日志/监控压力 |
 | `use_session_gate` | `true` | `false` | 正式模式只有 Session READY/RECORDING 时允许启动；Bag 模式直接请求 Virtual Receiver |
-| `stale_stop_ms` | 未写入，生效默认 50 | 100 | 位姿或夹爪超过该年龄即不可用；ACTIVE 时触发 `STALE_STOP`。越小越安全敏感，越大越能容忍卡顿但停机更慢 |
+| `stale_stop_ms` | 未写入，生效默认 50 | 200 | 位姿或夹爪超过该年龄即不可用；ACTIVE 时触发 `STALE_STOP`。越小越安全敏感，越大越能容忍卡顿但停机更慢 |
 | `start_service_timeout_ms` | 10000 | 10000 | START 服务最长等待时间；超时后返回 IDLE |
 | `velocity_max_dt_ms` | 150 | 150 | Bridge 自身 State Twist 的最大连续采样间隔；超过后速度重新建基线 |
 
@@ -262,19 +289,31 @@ Bridge 还支持以下参数，但当前 YAML 未显式写入，使用代码默�
 |---|---:|---:|---|
 | `command_rate_hz` | 20 | 20 | 位姿、速度、夹爪目标的下发频率 |
 | `state_timeout_ms` | 200 | 200 | 超过该时间未收到新 State 时停止输出，并要求先看到 disabled 才能重新启动 |
-| `left_base_frame` | `l/base_link` | `l/work/pikabase` | 左目标消息的 frame_id，必须与下游控制链约定一致 |
-| `right_base_frame` | `r/base_link` | `r/work/pikabase` | 右目标消息的 frame_id |
-| `left_default_tcp_position_m` | `[-0.323,-0.028,0.304]` | 相同 | 左臂每次会话的固定 TCP 起点，单位 m |
-| `right_default_tcp_position_m` | `[-0.299,0.014,0.319]` | 相同 | 右臂固定 TCP 起点，单位 m |
-| `*_default_tcp_orientation_xyzw` | 见 YAML | 相同 | 固定 TCP 起始姿态，顺序为 x/y/z/w，必须是可归一化四元数 |
-| `*_base_from_pika_quaternion_xyzw` | `[0.70710678,0,-0.70710678,0]` | 相同 | Pika 坐标到机械臂基坐标的固定旋转；修改会改变各轴方向和姿态映射 |
-| `translation_scale_left/right` | 1.0 | 1.0 | Pika 平移到目标平移的倍率；大于 1 放大动作，小于 1 缩小动作 |
+| `left_base_frame` | `l/base_link` | `l/work/pikabase` | 左 Pose 目标消息的 frame_id，必须与下游控制链约定一致 |
+| `right_base_frame` | `r/base_link` | `r/work/pikabase` | 右 Pose 目标消息的 frame_id |
+| `left_velocity_frame` | `l/link_6` | `l/link_6` | 左速度的当前末端坐标系名称，与 Pose 的基坐标系分开 |
+| `right_velocity_frame` | `r/link_6` | `r/link_6` | 右速度的当前末端坐标系名称 |
+| `orientation_mapping_mode` | `relative` | `relative` | 只控制姿态：`absolute` 输出转换后的 Pika 绝对姿态；`relative` 输出相对启动姿态的变化 |
+| `left_default_tcp_position_m` | `[-0.323,-0.028,0.304]` | 相同 | 左臂每次会话的固定 TCP 位置起点，单位 m |
+| `right_default_tcp_position_m` | `[-0.299,0.014,0.319]` | 相同 | 右臂每次会话的固定 TCP 位置起点，单位 m |
+| `*_default_tcp_orientation_xyzw` | 见 YAML | 相同 | 定义相对位置的起始 TCP 轴，并在 `relative` 模式作为起始姿态 |
+| `*_base_from_pika_quaternion_xyzw` | `[0,0,0,1]` | 相同 | Bridge 输出轴到机械臂 TCP 轴的附加旋转；单位旋转避免重复应用固定轴映射 |
+| `translation_scale_left/right` | 1.0 | 1.0 | Pika 相对位移到目标相对位移的倍率，不影响姿态 |
 | `*_gripper_closed_position` | 0.0 | 0.0 | 映射为夹爪百分比 0.0 的原始值 |
 | `*_gripper_open_position` | 0.0967 | 0.0967 | 映射为夹爪百分比 1.0 的原始值；区间外会截断到 0 或 1 |
 | `velocity_filter_cutoff_hz` | 10 | 10 | Mapper 速度低通截止频率；降低更平滑，增大更灵敏但噪声更多 |
+| `velocity_min_dt_ms` | 5 | 5 | 小于该间隔的样本不参与求导，避免极小时间差放大噪声 |
 | `velocity_max_dt_ms` | 150 | 150 | 目标速度允许的最大样本间隔；超过后清零并重新建立速度基线 |
+| `velocity_derivative_window_samples` | 5 | 5 | 速度求导使用的 Pose 数量；增大可降低差分噪声，但会增加启动等待和响应延迟 |
+| `velocity_kalman_enabled` | `true` | `true` | 是否对六轴速度启用独立的一维卡尔曼滤波 |
+| `linear_velocity_kalman_process_variance` | 0.2 | 0.2 | 线速度过程方差；增大时跟随真实速度变化更快 |
+| `linear_velocity_kalman_measurement_variance` | 0.05 | 0.05 | 线速度测量方差；增大时毛刺抑制更强 |
+| `angular_velocity_kalman_process_variance` | 0.5 | 0.5 | 角速度过程方差；增大时跟随真实角速度变化更快 |
+| `angular_velocity_kalman_measurement_variance` | 0.1 | 0.1 | 角速度测量方差；增大时角速度毛刺抑制更强 |
+| `linear_velocity_deadband_mps` | 0.005 | 0.005 | 滤波后线速度向量模长低于该值时输出三轴 0；设为 0 可关闭线速度死区 |
+| `angular_velocity_deadband_radps` | 0.012 | 0.012 | 滤波后角速度向量模长低于该值时输出三轴 0；单位 rad/s，设为 0 可关闭角速度死区 |
 
-左右默认 TCP 是每次启动遥操时的目标零位，并不会读取当前机械臂 TF。修改前应确认机械臂实际起始姿态与配置一致。
+Mapper 不读取机械臂当前 TF。当前相对模式下，第一帧位姿始终等于配置的默认 TCP 位姿，后续输出只取决于 Pika 相对启动位姿的变化。切换姿态模式或修改坐标四元数后，应先在低速、空载条件下检查第一帧目标。
 
 ### Session Manager 参数（仅正式模式）
 
@@ -332,7 +371,7 @@ source /opt/ros/humble/setup.bash
 source ~/pika_ros/install/setup.bash
 export ROS_DOMAIN_ID=65
 ros2 launch sensor_tools open_multi_sensor_with_teleop.launch.py \
-  l_serial_port:=/dev/ttyUSB50 r_serial_port:=/dev/ttyUSB51
+  l_serial_port:=/dev/ttyUSB0 r_serial_port:=/dev/ttyUSB1
 ```
 
 终端 2，正式模式：
@@ -362,9 +401,7 @@ ros2 launch pika_teleop_bringup pika_bag.launch.py
 ```bash
 ros2 launch pika_teleop_bringup pika_teleop.launch.py \
   start_pika_official:=true \
-  pika_ros_ws:=/home/user2/pika_ros \
-  left_serial_port:=/dev/ttyUSB50 \
-  right_serial_port:=/dev/ttyUSB51
+  pika_ros_ws:=/home/user2/pika_ros
 ```
 
 Bag/Demo 模式：
@@ -372,9 +409,7 @@ Bag/Demo 模式：
 ```bash
 ros2 launch pika_teleop_bringup pika_bag.launch.py \
   start_pika_official:=true \
-  pika_ros_ws:=/home/user2/pika_ros \
-  left_serial_port:=/dev/ttyUSB50 \
-  right_serial_port:=/dev/ttyUSB51
+  pika_ros_ws:=/home/user2/pika_ros
 ```
 
 launch 参数均通过 `$HOME` 和传入路径解析，不依赖旧用户名 `Lei`。

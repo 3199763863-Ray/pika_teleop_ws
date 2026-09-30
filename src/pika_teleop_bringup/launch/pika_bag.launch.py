@@ -66,8 +66,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value=os.path.join(os.path.expanduser('~'), 'pika_ros'),
             description='Path to the official Pika ROS workspace.',
         ),
-        DeclareLaunchArgument('left_serial_port', default_value='/dev/ttyUSB50'),
-        DeclareLaunchArgument('right_serial_port', default_value='/dev/ttyUSB51'),
+        DeclareLaunchArgument('left_serial_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('right_serial_port', default_value='/dev/ttyUSB1'),
         ExecuteProcess(
             cmd=[
                 'bash', '-c', official_command, 'bash', pika_ros_ws,

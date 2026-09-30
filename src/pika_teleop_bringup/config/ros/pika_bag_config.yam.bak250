@@ -1,27 +1,23 @@
 pika_teleop_publisher:
   ros__parameters:
     velocity_max_dt_ms: 150.0
-    state_rate_hz: 20.0
+    state_rate_hz: 100.0
     use_session_gate: false
     stale_stop_ms: 500.0
     start_service_timeout_ms: 10000.0
 
 pika_realman_mapper:
   ros__parameters:
-    command_rate_hz: 20.0
+    command_rate_hz: 100.0
     state_timeout_ms: 200.0
     left_base_frame: "l/work/pikabase"
     right_base_frame: "r/work/pikabase"
-    # Velocity components use the current end-effector axes.
-    left_velocity_frame: "l/work/pikabase"
-    right_velocity_frame: "r/work/pikabase"
-    orientation_mapping_mode: "relative"
     left_default_tcp_position_m: [-0.323, -0.028, 0.304]
     left_default_tcp_orientation_xyzw: [0.990, 0.003, -0.045, -0.137]
     right_default_tcp_position_m: [-0.299, 0.014, 0.319]
     right_default_tcp_orientation_xyzw: [0.989, -0.052, -0.047, 0.128]
-    left_base_from_pika_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
-    right_base_from_pika_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    left_base_from_pika_quaternion_xyzw: [-0.5, 0.5, 0.5, 0.5]
+    right_base_from_pika_quaternion_xyzw: [-0.5, 0.5, 0.5, 0.5]
     translation_scale_left: 1.0
     translation_scale_right: 1.0
     left_gripper_closed_position: 0.0
@@ -29,16 +25,7 @@ pika_realman_mapper:
     right_gripper_closed_position: 0.0
     right_gripper_open_position: 0.0967
     velocity_filter_cutoff_hz: 10.0
-    velocity_min_dt_ms: 5.0
     velocity_max_dt_ms: 150.0
-    velocity_derivative_window_samples: 5
-    velocity_kalman_enabled: true
-    linear_velocity_kalman_process_variance: 0.2
-    linear_velocity_kalman_measurement_variance: 0.05
-    angular_velocity_kalman_process_variance: 0.5
-    angular_velocity_kalman_measurement_variance: 0.1
-    linear_velocity_deadband_mps: 0.005
-    angular_velocity_deadband_radps: 0.012
 
 pika_teleop_virtual_receiver:
   ros__parameters:
