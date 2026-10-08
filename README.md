@@ -1,346 +1,76 @@
-# Pika 双手遥操与 RealMan 数据采集系统
+# Pika 双手遥操与 RealMan 数据采集接口
 
-本仓库把 Pika 双 Sense 的位姿和夹爪数据转换成左右 RealMan 机械臂可使用的笛卡尔目标，并提供手势启停、录制门控、异常停机和正常结束回零。
+本仓库接收 Pika 双 Sense 的位姿和夹爪数据，生成左右 RealMan 的笛卡尔目标，并在正式模式中协调录制和正常结束后的回零。本仓库**不包含 RealMan 速度接收器、机器人 SDK 控制进程或 Recorder 的落盘实现**。接口已定义不代表外部设备和数据集已完成端到端验证。
 
-本文档以 `main` 分支的功能提交 `9e99758` 为实现基线。当前版本的 State 发布和目标下发频率均为 20 Hz；角速度单位为 rad/s；线速度小于 0.02 m/s、角速度小于 0.03 rad/s 时输出归零；左右夹爪全开标定值为 0.0967。
+## 运行环境
 
-## 本机环境
+项目面向 Ubuntu 22.04、ROS 2 Humble 和 Python 3.10。以下是 **2026-10-08 部署机示例**，迁移到其他机器时请替换地址和设备路径：
 
-| 项目 | 当前值 |
+| 项目 | 此机器示例 |
 |---|---|
-| 主机 | `user2-ThinkCentre-K70-06-CEL2` |
-| 登录 | `ssh user2@192.168.5.152` |
-| 系统 | Ubuntu 22.04.5 LTS |
-| ROS 2 | Humble |
-| Python | 3.10.12 |
-| ROS Domain | `65` |
-| 遥操工作区 | `/home/user2/pika_teleop_ws` |
-| 官方 Pika 工作区 | `/home/user2/pika_ros` |
-| 左 Sense 串口 | `/dev/pika_gripper_left` |
-| 右 Sense 串口 | `/dev/pika_gripper_right` |
+| 主机 | `user2-ThinkCentre-K70-06-CEL2`，`ssh user2@192.168.31.97` |
+| 工作区 | `/home/user2/pika_teleop_ws`；官方 Pika 工作区 `/home/user2/pika_ros` |
+| ROS 域 | `ROS_DOMAIN_ID=65` |
+| 左右夹爪串口别名 | `/dev/pika_gripper_left`、`/dev/pika_gripper_right` |
 
-左右夹爪使用本机 udev 固定别名，底层 `ttyUSB0/1` 即使在设备重插或重启后交换，也不会改变 launch 的左右关系。两个 CH341 芯片没有唯一序列号，规则按物理 USB 插口识别，因此左右线缆必须保持在已标定的插口。
+本机别名由 USB 物理插口规则生成；换插口后需重新核对左右对应关系，不能直接假设 `ttyUSB0/1` 顺序固定。仓库配置文件的实际后缀是 `.yam`。
 
-每个新终端先加载环境：
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/pika_ros/install/setup.bash
-source ~/pika_teleop_ws/install/setup.bash
-export ROS_DOMAIN_ID=65
-```
-
-两份 launch 会为本项目 Python 节点补齐安装路径，避免出现 `PackageNotFoundError`。仍建议按上述顺序加载环境，保证 ROS 接口、官方节点和命令行工具都来自正确工作区。
-
-## 当前架构
+## 架构与模式
 
 ```mermaid
 flowchart LR
-    PL[左 Pika Pose] --> B[Teleop Bridge]
-    PR[右 Pika Pose] --> B
-    GL[左夹爪 JointState] --> B
-    GR[右夹爪 JointState] --> B
-
-    B -->|左右 PikaTeleopState 20 Hz| M[RealMan Mapper]
-    B <-->|SetTeleopEnabled| G{启停门控}
-
-    G -->|正式模式| S[Session Manager]
-    S <-->|PREPARE / START / STOP| R[外部 Recorder]
-    S -->|正常结束 MoveJ| A[RealMan Action Server]
-
-    G -->|Bag 模式| V[Virtual Receiver]
-
-    M --> CP[Cartesian Pose 20 Hz]
-    M --> CV[Cartesian Velocity 20 Hz]
-    M --> GP[Gripper Percentage 20 Hz]
+  O[外部官方 Pika 节点<br/>双 Pose + 双 JointState] --> B[Bridge<br/>手势、时效、固定预变换]
+  B -->|左右 PikaTeleopState| M[Mapper<br/>共享基准、速度与 Pose]
+  M -->|Pose / Velocity / Gripper| X[外部 RealMan 接收器]
+  B <-->|左右 set_enabled| G{启停服务}
+  G -->|正式| S[Session Manager]
+  G -->|Bag/Demo| V[Virtual Receiver]
+  S <-->|PREPARE / START / STOP| R[外部 Recorder]
+  S -->|正常结束 MoveJ| A[外部左右 Action Server]
+  T[外部 RealMan TF] -->|正式模式每侧启用时读取一次| M
 ```
 
-系统分为两条运行路径：
+| 模式 | Launch | 本仓库启动的节点 | 外部依赖 |
+|---|---|---|---|
+| 正式 | `pika_teleop.launch.py` | Session Manager、Bridge、Mapper | 官方 Pika 输入、RealMan TCP TF、Recorder、左右回零 Action、实际运动接收器 |
+| Bag/Demo | `pika_bag.launch.py` | Virtual Receiver、Bridge、Mapper | 官方 Pika 输入；用配置的 TCP 起点代替 RealMan TF |
 
-| 模式 | Launch | 启停服务提供者 | 录制与回零 | 用途 |
-|---|---|---|---|---|
-| 正式模式 | `pika_teleop.launch.py` | `pika_session_manager` | 启用 | 真机采集、Recorder 联动、正常结束双臂回零 |
-| Bag/Demo 模式 | `pika_bag.launch.py` | `pika_teleop_virtual_receiver` | 不启用 | 调试 Pika、验证映射与 Topic，不依赖 Recorder |
+两模式提供同名 `/pika_teleop/left|right/set_enabled` 服务，**不能同时运行**。Bag launch 不启动 Recorder、Session Manager、回零 Action，也不会自动执行 `ros2 bag record`。两份 launch 默认 `start_pika_official:=false`；若官方节点已运行，不要再将其设为 `true`。设为 `true` 时，launch 使用进程组 supervisor 启动官方栈，并在退出时清理该组子进程；这项清理不解决官方位姿断流或定位质量问题。
 
-官方 Pika 节点属于 `/home/user2/pika_ros`，本项目默认不修改其发布频率和实现。`start_pika_official` 只决定 launch 是否代为启动官方节点。
+## 八个 Package
 
-## Package 职责
-
-| Package | 作用 |
+| Package | 职责 |
 |---|---|
-| `pika_teleop_interfaces` | 定义标准状态 `PikaTeleopState` 和启停服务 `SetTeleopEnabled` |
-| `pika_teleop_bridge` | 缓存四路官方输入，检查时效与数值，识别手势，转换坐标，以 20 Hz 发布标准状态 |
-| `pika_realman_mapper` | 建立每侧会话零位，生成 RealMan 位姿、速度和夹爪百分比目标 |
-| `pika_session_manager` | 正式模式的录制状态机、左右臂协同停止和正常结束回零 |
-| `pika_teleop_virtual_receiver` | Bag 模式的轻量启停服务和 State/watchdog 验证 |
-| `pika_teleop_bringup` | 正式与 Bag launch、共享 ROS 参数配置 |
-| `realman_msgs` | RealMan 控制、运动和回零 Action/Service 接口 |
-| `realman_recording_msgs` | Recorder 状态及 PREPARE/START/STOP 接口 |
+| `pika_teleop_interfaces` | `PikaTeleopState` 消息与 `SetTeleopEnabled` 服务 |
+| `pika_teleop_bridge` | 缓存四路官方输入、双击/三击、输入时效与跳变检查、固定预变换、左右 State |
+| `pika_realman_mapper` | 共享 Pika 基准标定、每侧启动零位、Pose/速度/夹爪目标与虚拟 TF |
+| `pika_session_manager` | 正式模式的全局录制 episode、准入、停止与正常结束回零 |
+| `pika_teleop_virtual_receiver` | Bag 模式的启停服务及 State 接收 watchdog；不控制机器人 |
+| `pika_teleop_bringup` | 两份 launch、supervisor 与两份 `.yam` 配置 |
+| `realman_msgs` | 外部 RealMan 控制与回零所需的接口定义 |
+| `realman_recording_msgs` | 外部 Recorder 的管理服务和状态消息定义 |
 
-## 工作流程
+## 数据与坐标
 
-### 1. 输入采集
+Bridge 以 `RELIABLE + VOLATILE + KEEP_LAST(1)` 订阅 `/pika_pose_l`、`/pika_pose_r`（`PoseStamped`）和 `/gripper_l/joint_state`、`/gripper_r/joint_state`（`JointState`）。它以 **20 Hz** 发布 `/pika_teleop/left|right/state`（`PikaTeleopState`，`BEST_EFFORT + VOLATILE + depth 1`）。State 含转换后的 `pose`、`twist`、`gripper_position`、`enabled`、`valid`、`velocity_valid`、两路源时间戳及数据年龄。Bridge 的固定预变换是 `(x,y,z)→(-z,y,x)`，State 的 `header.frame_id` 为 `pika_teleop_frame`。
 
-Bridge 异步订阅四路官方数据，QoS 为 `RELIABLE + VOLATILE + KEEP_LAST(1)`：
+Mapper 在此预变换结果上，用稳定的左右 Pika 样本建立共享基准：原点取双侧中点，Y 从左指向右，Z 取 Pika 竖直轴，X 由 `Y×Z` 得出。标定仅在节点启动后完成一次。正式模式每侧启用时读取一次相应 RealMan 基座到 TCP 的 TF（坐标变换树），把当前 Pika 原点与该侧 TCP 原点对齐；Bag 模式使用 YAML 中的默认 TCP 位姿。没有所需 TF 时，正式 Mapper 等待，不建立该侧目标会话。启动后的位置变化按共享基准求差，不再按手柄初始朝向额外旋转。角速度按同一基准轴求导；兼容用 Pose 的姿态模式独立配置。详见 [Mapper 说明](src/pika_realman_mapper/README.md)。
 
-| Topic | 类型 | 用途 |
-|---|---|---|
-| `/pika_pose_l` | `geometry_msgs/PoseStamped` | 左侧位姿 |
-| `/pika_pose_r` | `geometry_msgs/PoseStamped` | 右侧位姿 |
-| `/gripper_l/joint_state` | `sensor_msgs/JointState` | 左侧夹爪及手势 |
-| `/gripper_r/joint_state` | `sensor_msgs/JointState` | 右侧夹爪及手势 |
+Mapper 对已启用且有效的侧以 **20 Hz** 发布 `/pika/l|r/cartesian_pose`（`PoseStamped`）和 `/pika/l|r/cartesian_velocity`（`TwistStamped`）；夹爪 `/pika/l|r/gripper_percentage`（`Float32`，0–1）由独立限频器默认以**最多 4 Hz** 发布。命令 Topic 是 `RELIABLE + VOLATILE + depth 1`，线速度单位 m/s，角速度 rad/s。
 
-订阅回调只保存最新样本。Bridge 的 20 Hz 控制周期读取最新值，不会要求四个 Topic 严格同步，也不会修改官方节点的原始发布频率。
+**`frame_id` 分开配置**：正式 Pose 为 `l/base_link`、`r/base_link`，Bag Pose 为 `l/work/pikabase`、`r/work/pikabase`；两模式速度均标记为 `l/work/pikabase`、`r/work/pikabase`。`l/link_6`、`r/link_6` 是启动时读取的 TCP TF 名称，不是速度消息的 `frame_id`。这些命名和数值在外部运动接收器中的解释仍须逐轴实测确认。
 
-### 2. 输入有效性和手势
+## 启停、录制与安全
 
-一侧输入必须同时满足以下条件才可进入或保持 ACTIVE：
+左右双击或 `scripts/pika_start.sh` 发起 START，三击或 `scripts/pika_stop.sh` 发起 USER_STOP。脚本调用 Bridge 的 `/pika_teleop/left|right/manual_enable`；Bridge 再调用本模式的 `/pika_teleop/left|right/set_enabled`。正式模式还通过 `/pika_session/start_allowed` 限制新 START，并以 `/pika_session/state` 报告全局状态。
 
-- 位姿和夹爪都已收到；
-- 位置、四元数和夹爪值为有限数；
-- 四元数可归一化；
-- 位姿与夹爪年龄均不超过 `stale_stop_ms`；
-- ACTIVE 后相邻新位姿没有超过 PoseJump 阈值。
+正式模式主流程：`PREPARING → READY → STARTING → RECORDING → STOPPING → RESETTING → PREPARING`。首次 START 要等待外部 Recorder 成功返回；另一侧可加入同一 recording session。任一侧正常 USER_STOP 会结束整个 episode：先停止两侧，再请求 Recorder STOP；成功后通过外部 `/l/execute_motion`、`/r/execute_motion` 并行 MoveJ 回零。`STALE_STOP` 或 `POSE_JUMP_STOP` 会停止录制并进入 `FAILED`，**不会自动 MoveJ**。录制或回零失败也进入 `FAILED`，需人工排查并重启 Session Manager。`middle_reset_joint_degrees` 仅校验保存，当前不发送中臂 Action。
 
-手势按夹爪开合次数识别：
+Bridge 原始输入超时会停止该侧；Mapper 的 State watchdog 会停止对应目标并要求重新启用；外部 RealMan 接收器仍需自己实现命令超时、限位和急停。Recorder 真正写盘、相机健康和真机响应由外部系统负责，单凭本仓库代码无法证明。
 
-- IDLE 时连续双击：请求 `USER_START`；
-- ACTIVE 时连续三击：请求 `USER_STOP`；
-- PENDING_START 期间不重复识别新手势。
+## 构建与运行
 
-Bridge 先在本地停止，再异步通知下游，因此 Recorder 或服务响应变慢不会阻塞 20 Hz 控制周期。
-
-### 3. 正式模式启动
-
-Session Manager 启动后先向 Recorder 发送 PREPARE：
-
-```text
-PREPARING -> READY -> STARTING -> RECORDING
-```
-
-第一侧双击时：
-
-1. Bridge 请求该侧 `set_enabled=true`；
-2. Session Manager 要求 Recorder START；
-3. Recorder 返回成功和 `session_id` 后进入 RECORDING；
-4. Bridge 收到成功响应后将该侧切到 ACTIVE。
-
-第二侧随后双击时直接加入同一录制 session，不会再次启动 Recorder。
-
-任意一侧正常三击停止后：
-
-```text
-RECORDING -> STOPPING -> RESETTING -> PREPARING -> READY
-```
-
-系统会停止两侧遥操、停止录制，然后分别调用 `/l/execute_motion` 和 `/r/execute_motion` 执行 MoveJ 回零。只有两侧都成功后才重新 PREPARE。
-
-发生 `STALE_STOP`、`POSE_JUMP_STOP` 等异常时，Session Manager 停止录制并进入 FAILED，不自动移动机械臂，避免异常状态下自动回零。
-
-### 4. Bag/Demo 模式启动
-
-Virtual Receiver 直接接受启停请求，不连接 Recorder，也不执行回零。其职责是：
-
-- 接受或拒绝 `SetTeleopEnabled`；
-- 检查 State 接收超时；
-- 在 enabled/valid、watchdog 或数据异常变化时记录一次日志；
-- 默认不打印每秒完整摘要，避免终端和 ROS 日志持续刷写。
-
-### 5. 位姿映射模式
-
-位置始终按启动零位做相对映射，没有绝对位置选项。每侧启动时记录当前 Pika 位置作为 `pika_start_position`，并把 YAML 默认 TCP 位置作为 `rm_start_position`：
-
-```text
-pika_delta_fixed = pika_current_position - pika_start_position
-pika_delta_start_frame = inverse(R(pika_start_orientation))
-                       * pika_delta_fixed
-target_position = rm_start_position
-                + R(base_from_pika)
-                * translation_scale
-                * pika_delta_start_frame
-```
-
-位置差首先转入启动时的 Pika 局部坐标系，再应用轴映射到配置的 RealMan 命令坐标系。
-Pika +X、+Y、-Z 对应命令坐标系 +Z、+Y、+X。当前位置仍然是相对起点计算，
-不逐帧累计；只在原点旋转手柄不会改变目标位置。
-
-姿态由 `orientation_mapping_mode` 选择。正式和 Bag 配置当前都使用 `relative`，
-即记录启动时的 Pika 姿态，并把相对旋转映射后叠加到默认 TCP 姿态：
-
-```text
-q_delta_pika = inverse(q_start) * q_current
-q_delta_base = q_map * q_delta_pika * inverse(q_map)
-target_orientation = rm_start_orientation * q_delta_base
-```
-
-Bridge 执行所需的固定坐标变换 `(x, y, z) -> (-z, y, x)`，即 Pika +X
-对应 RealMan +Z、Pika -Z 对应 RealMan +X，Y 轴保持不变。Mapper 使用单位旋转
-`[0.0, 0.0, 0.0, 1.0]`（xyzw），避免对 Bridge 输出重复旋转。
-
-每次停止都会清空位置和姿态零位；再次启动重新采样。
-
-### 6. 速度生成
-
-Mapper 使用最近 `velocity_derivative_window_samples` 个目标 Pose 和 Pika 源时间戳，在配置的命令坐标系中求导和平滑。
-`cartesian_velocity` 使用 `left_velocity_frame/right_velocity_frame`，其数值与对应 `frame_id` 保持一致；
-Pose 使用 `left_base_frame/right_base_frame`。当前配置中同一侧的 Pose 与速度使用同一命令坐标系。
-
-Pika +X、+Y、-Z 速度对应命令坐标系 +Z、+Y、+X。Pika 转动后的实际位移方向仍会反映到命令分量中。
-滤波历史和发布分量始终处于同一稳定坐标系，避免把不同姿态下的局部分量混合或把 TCP 分量误标成基坐标系。
-方向快速变化时，求导窗口和滤波会造成短暂的响应滞后。
-
-输出单位：
-
-- 线速度：m/s；
-- 角速度：rad/s。
-
-当前配置使用 5 点窗口，以窗口首尾 Pose 的变化除以总时间。启动后的前四帧只建立窗口并输出 0，避免第二帧立刻产生不稳定速度。相邻样本间隔小于 `velocity_min_dt_ms` 时忽略该样本；间隔超过 `velocity_max_dt_ms` 时清空窗口并重新建立基线。
-
-原始速度依次经过六轴独立的一维卡尔曼滤波和一阶低通滤波。卡尔曼过程方差越大，响应越快、保留的波动越多；测量方差越大，抑制毛刺越强、响应越慢。`velocity_kalman_enabled` 可以单独关闭卡尔曼滤波。
-
-当前版本提供两个可从正式/Bag YAML 调整的输出死区：
-
-- 滤波后线速度向量模长 `< 0.005 m/s` 时，线速度三轴及对应卡尔曼状态归零；
-- 滤波后角速度向量模长 `< 0.012 rad/s` 时，角速度三轴及对应卡尔曼状态归零。
-
-## ROS 2 接口
-
-### 标准 State
-
-| Topic | 类型 | 频率与 QoS |
-|---|---|---|
-| `/pika_teleop/left/state` | `pika_teleop_interfaces/msg/PikaTeleopState` | 20 Hz，BEST_EFFORT，VOLATILE，depth 1 |
-| `/pika_teleop/right/state` | `pika_teleop_interfaces/msg/PikaTeleopState` | 20 Hz，BEST_EFFORT，VOLATILE，depth 1 |
-
-`PikaTeleopState` 包含转换后 Pose、Twist、夹爪原始值、`enabled`、`valid`、`velocity_valid`、源时间戳以及数据年龄。
-
-### 启停服务
-
-| Service | 类型 |
-|---|---|
-| `/pika_teleop/left/set_enabled` | `pika_teleop_interfaces/srv/SetTeleopEnabled` |
-| `/pika_teleop/right/set_enabled` | `pika_teleop_interfaces/srv/SetTeleopEnabled` |
-
-### Mapper 输出
-
-| Topic | 类型 | 单位/范围 |
-|---|---|---|
-| `/pika/l/cartesian_pose` | `geometry_msgs/PoseStamped` | m、四元数 |
-| `/pika/r/cartesian_pose` | `geometry_msgs/PoseStamped` | m、四元数 |
-| `/pika/l/cartesian_velocity` | `geometry_msgs/TwistStamped` | m/s、rad/s |
-| `/pika/r/cartesian_velocity` | `geometry_msgs/TwistStamped` | m/s、rad/s |
-| `/pika/l/gripper_percentage` | `std_msgs/Float32` | 0.0 到 1.0 |
-| `/pika/r/gripper_percentage` | `std_msgs/Float32` | 0.0 到 1.0 |
-
-Mapper 节点启动后 Topic 会存在，但只有对应侧 State 同时满足 `enabled=true && valid=true` 时才发布目标消息。
-
-### Session 接口
-
-| 接口 | 类型 | 作用 |
-|---|---|---|
-| `/pika_session/state` | `std_msgs/String` | 当前 Session 状态，TRANSIENT_LOCAL |
-| `/pika_session/start_allowed` | `std_msgs/Bool` | Bridge 是否允许请求 START，TRANSIENT_LOCAL |
-| `/pika_session/force_stop_all` | `std_msgs/Empty` | 强制 Bridge 两侧停止 |
-| `/recording/manage` | `realman_recording_msgs/srv/ManageRecording` | Recorder PREPARE/START/STOP |
-| `/recording/status` | `realman_recording_msgs/msg/RecordingStatus` | Recorder 状态 |
-| `/l/execute_motion` | `realman_msgs/action/ExecuteMotion` | 左臂回零 |
-| `/r/execute_motion` | `realman_msgs/action/ExecuteMotion` | 右臂回零 |
-
-## 配置文件
-
-| 文件 | 使用模式 |
-|---|---|
-| `src/pika_teleop_bringup/config/ros/pika_config.yam` | 正式模式 |
-| `src/pika_teleop_bringup/config/ros/pika_bag_config.yam` | Bag/Demo 模式 |
-
-修改 YAML 后必须重启对应 launch。使用 `--symlink-install` 构建后，安装目录会链接到源码配置；如果不是软链接构建，则需要重新执行 `colcon build`。
-
-### Bridge 参数
-
-| 参数 | 正式值 | Bag 值 | 作用与影响 |
-|---|---:|---:|---|
-| `state_rate_hz` | 20 | 20 | State 发布和 Bridge 控制周期。增大可降低周期延迟，但增加 CPU、DDS 和日志/监控压力 |
-| `use_session_gate` | `true` | `false` | 正式模式只有 Session READY/RECORDING 时允许启动；Bag 模式直接请求 Virtual Receiver |
-| `stale_stop_ms` | 未写入，生效默认 50 | 200 | 位姿或夹爪超过该年龄即不可用；ACTIVE 时触发 `STALE_STOP`。越小越安全敏感，越大越能容忍卡顿但停机更慢 |
-| `start_service_timeout_ms` | 10000 | 10000 | START 服务最长等待时间；超时后返回 IDLE |
-| `velocity_max_dt_ms` | 150 | 150 | Bridge 自身 State Twist 的最大连续采样间隔；超过后速度重新建基线 |
-
-Bridge 还支持以下参数，但当前 YAML 未显式写入，使用代码默认值：
-
-| 参数 | 默认值 | 作用与影响 |
-|---|---:|---|
-| `gripper_open_threshold` | 0.075 | 高于此值判定夹爪打开 |
-| `gripper_close_threshold` | 0.025 | 低于此值判定夹爪闭合；与打开阈值形成迟滞，减少抖动误触发 |
-| `click_max_interval_ms` | 450 | 相邻有效点击允许的最大间隔；过小难触发，过大容易把独立动作合并 |
-| `gesture_reset_timeout_ms` | 1200 | 手势序列无新动作多久后清空 |
-| `max_position_jump_m` | 0.08 | ACTIVE 时单个新 Pose 允许的最大位置跳变，超过触发 `POSE_JUMP_STOP` |
-| `max_rotation_jump_deg` | 45 | ACTIVE 时单个新 Pose 允许的最大旋转跳变 |
-| `velocity_filter_cutoff_hz` | 10 | Bridge State Twist 的低通截止频率；越低越平滑但延迟更大 |
-
-如需让正式与 Bag 的 `stale_stop_ms` 完全一致，应在 `pika_config.yam` 中显式加入该参数，避免正式模式继续使用默认 50 ms。
-
-### Mapper 参数
-
-| 参数 | 正式值 | Bag 值 | 作用与影响 |
-|---|---:|---:|---|
-| `command_rate_hz` | 20 | 20 | 位姿、速度、夹爪目标的下发频率 |
-| `state_timeout_ms` | 200 | 200 | 超过该时间未收到新 State 时停止输出，并要求先看到 disabled 才能重新启动 |
-| `left_base_frame` | `l/base_link` | `l/work/pikabase` | 左 Pose 目标消息的 frame_id，必须与下游控制链约定一致 |
-| `right_base_frame` | `r/base_link` | `r/work/pikabase` | 右 Pose 目标消息的 frame_id |
-| `left_velocity_frame` | `l/link_6` | `l/link_6` | 左速度的当前末端坐标系名称，与 Pose 的基坐标系分开 |
-| `right_velocity_frame` | `r/link_6` | `r/link_6` | 右速度的当前末端坐标系名称 |
-| `orientation_mapping_mode` | `relative` | `relative` | 只控制姿态：`absolute` 输出转换后的 Pika 绝对姿态；`relative` 输出相对启动姿态的变化 |
-| `left_default_tcp_position_m` | `[-0.323,-0.028,0.304]` | 相同 | 左臂每次会话的固定 TCP 位置起点，单位 m |
-| `right_default_tcp_position_m` | `[-0.299,0.014,0.319]` | 相同 | 右臂每次会话的固定 TCP 位置起点，单位 m |
-| `*_default_tcp_orientation_xyzw` | 见 YAML | 相同 | 定义相对位置的起始 TCP 轴，并在 `relative` 模式作为起始姿态 |
-| `*_base_from_pika_quaternion_xyzw` | `[0,0,0,1]` | 相同 | Bridge 输出轴到机械臂 TCP 轴的附加旋转；单位旋转避免重复应用固定轴映射 |
-| `translation_scale_left/right` | 1.0 | 1.0 | Pika 相对位移到目标相对位移的倍率，不影响姿态 |
-| `*_gripper_closed_position` | 0.0 | 0.0 | 映射为夹爪百分比 0.0 的原始值 |
-| `*_gripper_open_position` | 0.0967 | 0.0967 | 映射为夹爪百分比 1.0 的原始值；区间外会截断到 0 或 1 |
-| `velocity_filter_cutoff_hz` | 10 | 10 | Mapper 速度低通截止频率；降低更平滑，增大更灵敏但噪声更多 |
-| `velocity_min_dt_ms` | 5 | 5 | 小于该间隔的样本不参与求导，避免极小时间差放大噪声 |
-| `velocity_max_dt_ms` | 150 | 150 | 目标速度允许的最大样本间隔；超过后清零并重新建立速度基线 |
-| `velocity_derivative_window_samples` | 5 | 5 | 速度求导使用的 Pose 数量；增大可降低差分噪声，但会增加启动等待和响应延迟 |
-| `velocity_kalman_enabled` | `true` | `true` | 是否对六轴速度启用独立的一维卡尔曼滤波 |
-| `linear_velocity_kalman_process_variance` | 0.2 | 0.2 | 线速度过程方差；增大时跟随真实速度变化更快 |
-| `linear_velocity_kalman_measurement_variance` | 0.05 | 0.05 | 线速度测量方差；增大时毛刺抑制更强 |
-| `angular_velocity_kalman_process_variance` | 0.5 | 0.5 | 角速度过程方差；增大时跟随真实角速度变化更快 |
-| `angular_velocity_kalman_measurement_variance` | 0.1 | 0.1 | 角速度测量方差；增大时角速度毛刺抑制更强 |
-| `linear_velocity_deadband_mps` | 0.005 | 0.005 | 滤波后线速度向量模长低于该值时输出三轴 0；设为 0 可关闭线速度死区 |
-| `angular_velocity_deadband_radps` | 0.012 | 0.012 | 滤波后角速度向量模长低于该值时输出三轴 0；单位 rad/s，设为 0 可关闭角速度死区 |
-
-Mapper 不读取机械臂当前 TF。当前相对模式下，第一帧位姿始终等于配置的默认 TCP 位姿，后续输出只取决于 Pika 相对启动位姿的变化。切换姿态模式或修改坐标四元数后，应先在低速、空载条件下检查第一帧目标。
-
-### Session Manager 参数（仅正式模式）
-
-| 参数 | 当前值 | 作用与影响 |
-|---|---:|---|
-| `recording_service` | `/recording/manage` | Recorder 管理服务名称 |
-| `recording_status_topic` | `/recording/status` | Recorder 状态 Topic；当前节点保留该接口配置 |
-| `recording_profile` | `teleop_v1` | START 请求使用的录制 profile |
-| `recording_task` | `pick_and_place` | 数据集任务标签 |
-| `recording_duration_sec` | 0 | 0 表示不设置固定时长，由 STOP 结束；正数交由 Recorder 限时 |
-| `record_cameras` | `true` | PREPARE/START 时请求 Recorder 录制相机；图像由相机节点产生，文件由 Recorder 写入 |
-| `prepare_retry_sec` | 2.0 | PREPARE 失败或服务未就绪时的重试间隔 |
-| `left_reset_action` | `/l/execute_motion` | 左臂回零 Action |
-| `right_reset_action` | `/r/execute_motion` | 右臂回零 Action |
-| `left_reset_joint_degrees` | `[12.172,25.223,73.054,-16.703,80.307,14.455]` | 左臂正常结束后的 6 轴目标角，单位 deg |
-| `right_reset_joint_degrees` | `[-9.89,18.046,79.074,15.505,79.606,-6.194]` | 右臂回零目标角，单位 deg |
-| `middle_reset_joint_degrees` | `[0,17.997,70,0,90,8.997]` | 当前版本仅校验并保留，未向中臂发送 Action |
-| `reset_velocity_percent` | 10 | 回零速度百分比，范围 0–100 |
-| `reset_blend_radius_percent` | 0 | 回零轨迹交融比例，0 表示不交融 |
-| `reset_timeout_sec` | 120 | 单侧回零 Action 超时参数 |
-
-### Virtual Receiver 参数（仅 Bag 模式）
-
-| 参数 | 当前值 | 作用与影响 |
-|---|---:|---|
-| `accept_start` | `true` | 是否接受 `enable=true`；设为 false 可测试 START 被拒绝 |
-| `state_timeout_ms` | 200 | 多久未收到 State 后将控制门标记为 BLOCKED |
-| `state_transition_warn_ms` | 未写入，默认 100 | 服务接受启停后，State 的 enabled 未在该时间内变化则警告 |
-| `periodic_summary` | 未写入，默认 `false` | true 时每秒打印完整左右摘要；会增加终端和日志写入量，日常运行建议保持 false |
-
-## 构建
+在目标 Ubuntu 机器的新终端执行：
 
 ```bash
 cd ~/pika_teleop_ws
@@ -348,133 +78,60 @@ source /opt/ros/humble/setup.bash
 source ~/pika_ros/install/setup.bash
 colcon build --symlink-install
 source install/setup.bash
+export ROS_DOMAIN_ID=65                 # 此机器示例；跨机器需与同组节点一致
 ```
 
-只修改 Mapper 或配置时可缩小构建范围：
+官方 Pika 已在同一 ROS 域运行时，任选**一种**模式：
 
 ```bash
-colcon build --packages-select pika_realman_mapper pika_teleop_bringup --symlink-install
-```
-
-## 启动
-
-### 官方 Pika 已单独启动
-
-终端 1：
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/pika_ros/install/setup.bash
-export ROS_DOMAIN_ID=65
-ros2 launch sensor_tools open_multi_sensor_with_teleop.launch.py \
-  l_serial_port:=/dev/pika_gripper_left \
-  r_serial_port:=/dev/pika_gripper_right
-```
-
-终端 2，正式模式：
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/pika_ros/install/setup.bash
-source ~/pika_teleop_ws/install/setup.bash
-export ROS_DOMAIN_ID=65
 ros2 launch pika_teleop_bringup pika_teleop.launch.py
+# 或：ros2 launch pika_teleop_bringup pika_bag.launch.py
 ```
 
-终端 2，Bag/Demo 模式：
+需要由本 launch 启动官方 Pika 时，在所选命令后追加 `start_pika_official:=true`。官方工作区或设备别名不同，可同时追加 `pika_ros_ws:=/实际路径`、`left_serial_port:=/设备路径`、`right_serial_port:=/设备路径`。停止时在启动终端按 Ctrl+C；由该 launch 启动的官方进程交给 supervisor 清理。启动前需确保本模式的外部依赖已就绪，首次真机动作应低速、空载、保持急停可用。
+
+## 当前参数速览
+
+表中“默认”来自代码，“正式/Bag”来自已提交 YAML；未写入 YAML 时按默认生效。部署机若有未提交配置，以该机运行时参数为准，差异见 [LOG](LOG.md)。
+
+| 项目 | 代码默认 | 正式 | Bag |
+|---|---:|---:|---:|
+| Bridge `state_rate_hz` | 100 Hz | **20 Hz** | **20 Hz** |
+| Bridge `stale_stop_ms` | 50 ms | **50 ms**（YAML 未写） | **2000 ms** |
+| Bridge `velocity_max_dt_ms` | 50 ms | 150 ms | 150 ms |
+| Mapper `command_rate_hz` | 100 Hz | **20 Hz** | **20 Hz** |
+| Mapper `state_timeout_ms` | 100 ms | 200 ms | 200 ms |
+| Mapper `gripper_publish_rate_hz` | 4 Hz | 4 Hz（YAML 未写） | 4 Hz（YAML 未写） |
+| Mapper 求导窗口 | 2 帧 | 5 帧 | 5 帧 |
+| Mapper 卡尔曼 / 低通 | 关 / 10 Hz | 开 / 10 Hz | 开 / 10 Hz |
+| 线速度 / 角速度死区 | 0.02 m/s / 0.03 rad/s | **0.005 m/s / 0.012 rad/s** | **0.005 m/s / 0.012 rad/s** |
+| 夹爪全开原始值 | 0.1 | 0.0967 | 0.0967 |
+| Virtual Receiver `state_timeout_ms` | 100 ms | 不启动 | 200 ms（已提交 YAML） |
+
+PoseJump 使用代码默认 `0.08 m`、`45°`。正式模式 `require_realman_start_tf=true`，Bag 为 `false`。配置文件为 [正式 YAML](src/pika_teleop_bringup/config/ros/pika_config.yam) 与 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam)；参数含义见 [Bridge](src/pika_teleop_bridge/README.md)、[Mapper](src/pika_realman_mapper/README.md) 和 [Bringup](src/pika_teleop_bringup/README.md)。修改配置后重启 launch；非软链接构建还需重建安装目录。
+
+## 检查与日志
+
+在已完成 `source` 且 `ROS_DOMAIN_ID` 一致的终端：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/pika_ros/install/setup.bash
-source ~/pika_teleop_ws/install/setup.bash
-export ROS_DOMAIN_ID=65
-ros2 launch pika_teleop_bringup pika_bag.launch.py
-```
-
-### 由本项目同时启动官方 Pika
-
-正式模式：
-
-```bash
-ros2 launch pika_teleop_bringup pika_teleop.launch.py \
-  start_pika_official:=true \
-  pika_ros_ws:=/home/user2/pika_ros
-```
-
-Bag/Demo 模式：
-
-```bash
-ros2 launch pika_teleop_bringup pika_bag.launch.py \
-  start_pika_official:=true \
-  pika_ros_ws:=/home/user2/pika_ros
-```
-
-launch 参数均通过 `$HOME` 和传入路径解析，不依赖旧用户名 `Lei`。
-
-## 运行检查
-
-确认关键节点：
-
-```bash
-ros2 node list | grep -E 'pika_teleop|pika_realman|pika_session'
-```
-
-确认关键 Topic：
-
-```bash
-ros2 topic list | grep -E 'pika_teleop|/pika/[lr]/cartesian|gripper_percentage'
-```
-
-测量频率：
-
-```bash
+ros2 node list
 ros2 topic hz /pika_teleop/left/state
-ros2 topic hz /pika/l/cartesian_pose
+ros2 topic info -v /pika_teleop/left/state
+ros2 topic echo /pika_teleop/left/state --qos-reliability best_effort
+ros2 topic echo /pika/l/cartesian_velocity --qos-reliability reliable
+ros2 service list | grep pika_teleop
+ros2 topic echo /pika_session/state --qos-durability transient_local  # 仅正式模式
+tail -n 100 ~/.ros/log/pika_teleop_latest/launch.log
 ```
 
-查看当前状态：
+Launch 会尝试把 `~/.ros/log/pika_teleop_latest` 链到本次日志目录，并写 `run_info.txt`；写入失败会被忽略，应以 launch 实际输出目录为准。`scripts/limit_pika_locator_logs.py` 仅抑制官方定位器的重复 WARN，**不会修复数据断流**。需要演示录包时，另开终端手动执行 `ros2 bag record`，具体命令见 [Bringup](src/pika_teleop_bringup/README.md)。
 
-```bash
-ros2 topic echo --once /pika_teleop/left/state
-ros2 topic echo --once /pika_session/state
-```
+## 进一步阅读
 
-查看角速度单位：
-
-```bash
-ros2 topic echo /pika/l/cartesian_velocity
-```
-
-其中 `twist.angular` 为 rad/s。
-
-## 日志与常见现象
-
-- `INPUT_UNUSABLE`：位姿或夹爪已收到，但数值无效或年龄超过 `stale_stop_ms`。日志会给出两种 age。
-- `INPUT_RECOVERED`：此前不可用的输入重新满足条件；它是恢复提示，不会自动恢复一次已经停止的遥操。
-- `STALE_STOP`：ACTIVE 时输入超时，Bridge 立即退回 IDLE。
-- `POSE_JUMP_STOP`：ACTIVE 时相邻新 Pose 跳变超过阈值。
-- `SESSION STOPPED: state watchdog timeout`：Mapper 超过 200 ms 没收到 State，停止目标输出并要求重新启停。
-- Mapper Topic 存在但无消息：通常是对应 State 仍为 `enabled=false` 或 `valid=false`。
-- 找不到 `/pika/{l,r}/cartesian_*`：检查 `/pika_realman_mapper` 是否存活；当前 launch 已补齐 Python 包路径。
-
-本项目日志默认只在状态变化、故障和恢复时打印一次。Bag Virtual Receiver 的 `periodic_summary=false` 时不会每秒打印整帧数据。
-
-ROS 日志位于 `~/.ros/log`。清理其中已经确认的历史运行目录不会改变代码、参数或 rosbag 数据，但应先停止 launch，并确认目标确实位于 `~/.ros/log`。Recorder 数据目录与这里无关，不要一并删除。
-
-## 安全说明
-
-- 第一次修改坐标四元数、默认 TCP、平移比例或回零关节角后，应先在低速、可急停条件下逐轴验证。
-- `stale_stop_ms` 和 `state_timeout_ms` 是两层不同保护：前者检查官方原始数据，后者检查标准 State 链路。
-- 放宽超时会减少误停，也会延长真实断流后的继续输出窗口。
-- 正常 USER_STOP 才允许自动回零；异常停止保持 FAILED，需人工确认现场状态。
-- 夹爪开合阈值用于手势识别，夹爪 closed/open position 用于输出百分比，两组参数作用不同。
-
-## Git 状态
-
-当前工作版本位于 `main`，最近提交：
-
-```text
-9e99758 保留速度死区与夹爪全开标定
-```
-
-实验分支 `feat/pika-velocity-gentle` 仍保留，但日常运行和后续修改应以 `main` 为准。当前本地 main 领先 `origin/main`，推送前先确认远端状态和提交范围。
+- [Bridge：输入、手势和 State](src/pika_teleop_bridge/README.md)
+- [Mapper：基准、TF、速度和参数](src/pika_realman_mapper/README.md)
+- [Session Manager：录制与回零状态机](src/pika_session_manager/README.md)
+- [Virtual Receiver：Bag 模式 watchdog](src/pika_teleop_virtual_receiver/README.md)
+- [Bringup：两种 launch 和录包命令](src/pika_teleop_bringup/README.md)
+- [LOG：文档同步记录与未验证事项](LOG.md)

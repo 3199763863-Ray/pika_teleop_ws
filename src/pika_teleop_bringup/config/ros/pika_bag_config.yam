@@ -55,4 +55,4 @@ pika_realman_mapper:
 pika_teleop_virtual_receiver:
   ros__parameters:
     accept_start: true
-    state_timeout_ms: 200.0
+    state_timeout_ms: 2000.0
