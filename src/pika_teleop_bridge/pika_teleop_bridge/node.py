@@ -47,6 +47,7 @@ class PikaTeleopPublisher(Node):
         self.declare_parameter('velocity_filter_cutoff_hz', 10.0)
         self.declare_parameter('velocity_max_dt_ms', 50.0)
         self.declare_parameter('use_session_gate', True)
+        self.declare_parameter('gesture_enabled', True)
 
         self.state_rate_hz = self._positive_parameter('state_rate_hz')
         self.stale_stop_ms = self._positive_parameter('stale_stop_ms')
@@ -56,6 +57,7 @@ class PikaTeleopPublisher(Node):
         self.use_session_gate = bool(
             self.get_parameter('use_session_gate').value
         )
+        self.gesture_enabled = bool(self.get_parameter('gesture_enabled').value)
         self.start_allowed = not self.use_session_gate
         self._last_gate_warning_ns = 0
         self._input_unusable = {side: False for side in self.SIDES}
@@ -235,10 +237,14 @@ class PikaTeleopPublisher(Node):
                 response.success = False
                 response.message = f'{side} already idle'
                 return response
+            pending = self.mode[side] == self.PENDING_START
             future = self.pending_start_futures[side]
             if future is not None and not future.done():
                 future.cancel()
-            self._deactivate(side, 'USER_STOP')
+            reason = 'STALE_STOP' if request.reason == 'pedal_device_lost' else (
+                'START_CANCEL_STOP' if pending else 'USER_STOP'
+            )
+            self._deactivate(side, reason)
             response.success = True
             response.message = f'{side} manual stop requested'
         return response
@@ -569,7 +575,8 @@ class PikaTeleopPublisher(Node):
 
         # Publish the gesture-completing sample before applying its transition.
         for side in self.SIDES:
-            self._process_gesture(side, *side_data[side])
+            if self.gesture_enabled:
+                self._process_gesture(side, *side_data[side])
         self._clean_disable_futures()
 
 

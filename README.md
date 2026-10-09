@@ -38,7 +38,7 @@ flowchart LR
 
 两模式提供同名 `/pika_teleop/left|right/set_enabled` 服务，**不能同时运行**。Bag launch 不启动 Recorder、Session Manager 或 Action Server，也不会自动执行 `ros2 bag record`；Virtual Receiver 在正常 USER_STOP 后可向外部 Action Server 发 Goal。两份 launch 默认 `start_pika_official:=false`；若官方节点已运行，不要再将其设为 `true`。设为 `true` 时，launch 使用进程组 supervisor 启动官方栈，并在退出时清理该组子进程；这项清理不解决官方位姿断流或定位质量问题。
 
-## 八个 Package
+## 九个 Package
 
 | Package | 职责 |
 |---|---|
@@ -48,6 +48,7 @@ flowchart LR
 | `pika_session_manager` | 正式模式的全局录制 episode、准入、停止与正常结束回零 |
 | `pika_teleop_virtual_receiver` | Bag 模式的启停服务、State watchdog，以及可选的单侧正常 STOP 复位 Goal |
 | `pika_teleop_bringup` | 两份 launch、supervisor 与两份 `.yam` 配置 |
+| `pika_foot_pedal` | 单脚踏板双臂踩一次启动、再踩一次停止；evdev 输入与 Bridge 手动启停服务 |
 | `realman_msgs` | 外部 RealMan 控制与回零所需的接口定义 |
 | `realman_recording_msgs` | 外部 Recorder 的管理服务和状态消息定义 |
 
@@ -64,6 +65,8 @@ Mapper 对已启用且有效的侧以 **20 Hz** 发布 `/pika/l|r/cartesian_pose
 ## 启停、录制与安全
 
 左右双击或 `scripts/pika_start.sh` 发起 START，三击或 `scripts/pika_stop.sh` 发起 USER_STOP。脚本调用 Bridge 的 `/pika_teleop/left|right/manual_enable`；Bridge 再调用本模式的 `/pika_teleop/left|right/set_enabled`。正式模式还通过 `/pika_session/start_allowed` 限制新 START，并以 `/pika_session/state` 报告全局状态。
+
+两份 launch 在本机默认 `start_foot_pedal:=true`。安装 `python3-evdev` 并确认用户可读脚踏板 `/dev/input/by-id/usb-0483_5750-if01-event-kbd` 后，原命令 `ros2 launch pika_teleop_bringup pika_bag.launch.py start_pika_official:=true pika_ros_ws:=/home/user2/pika_ros` 会同时启动官方节点和脚踏节点；正式模式可用 `pika_teleop.launch.py`。若要禁用脚踏，传 `start_foot_pedal:=false`。脚踏模式下夹爪手势判定停用但夹爪数据照常下发；踩一次先左后右启动，再踩一次停止，松脚不停止。`/foot_pedal/pressed` 是短暂物理按键状态，`/foot_pedal/enabled` 是逻辑启停请求状态。设备路径、键码、消抖和重复触发保护可由 launch 参数覆盖，详见 [脚踏板说明](src/pika_foot_pedal/README.md)。脚踏板不是硬件急停，归位完成需人工确认。
 
 正式模式主流程：`PREPARING → READY → STARTING → RECORDING → STOPPING → RESETTING → PREPARING`。首次 START 要等待外部 Recorder 成功返回；另一侧可加入同一 recording session。任一侧正常 USER_STOP 会结束整个 episode：先停止两侧，再请求 Recorder STOP；成功后通过外部 `/l/execute_motion`、`/r/execute_motion` 并行 MoveJ 回零。`STALE_STOP` 或 `POSE_JUMP_STOP` 会停止录制并进入 `FAILED`，**不会自动 MoveJ**。录制或回零失败也进入 `FAILED`，需人工排查并重启 Session Manager。`middle_reset_joint_degrees` 仅校验保存，当前不发送中臂 Action。
 

@@ -15,6 +15,8 @@ Bag YAML 默认 `reset_on_user_stop: true`。该模式只有已确认 ACTIVE 的
 
 ## 构建与启动
 
+脚踏板：两份 launch 在本机默认 `start_foot_pedal:=true`，并可覆盖 `foot_pedal_device`、`foot_pedal_key_code`、`foot_pedal_debounce_ms`、`foot_pedal_retrigger_guard_ms`。先安装 `python3-evdev` 并确保当前用户可读对应 `/dev/input/by-id/...`。原 Bag 命令 `ros2 launch pika_teleop_bringup pika_bag.launch.py start_pika_official:=true pika_ros_ws:=/home/user2/pika_ros` 会同时拉起脚踏节点；正式模式将 launch 文件换为 `pika_teleop.launch.py`。踩一次先左后右启动，再踩一次停止；松脚不停止。用 `start_foot_pedal:=false` 临时关闭脚踏并启用夹爪手势。启动时已踩住必须先松开。详见 [脚踏板说明](../pika_foot_pedal/README.md)。
+
 在目标 Ubuntu 22.04 / ROS 2 Humble 机器上：
 
 ```bash

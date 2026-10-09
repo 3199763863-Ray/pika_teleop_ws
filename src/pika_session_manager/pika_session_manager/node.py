@@ -133,6 +133,8 @@ class PikaSessionManager(Node):
         self._stop_future = None
         self._abnormal_stop = False
         self._stop_reason = ''
+        self._start_cancel_reason = ''
+        self._skip_reset_after_stop = False
         self._reset_goal_futures: Dict[str, object] = {}
         self._reset_result_futures: Dict[str, object] = {}
         self._reset_failures: Dict[str, str] = {}
@@ -253,10 +255,12 @@ class PikaSessionManager(Node):
                 response.success = False
                 response.message = f'session not ready: state={self.state}'
                 return response
+            self._start_cancel_reason = ''
             self._set_state(self.STARTING)
 
         if not self.recording_client.service_is_ready():
-            self._set_state(self.READY)
+            with self._lock:
+                self._set_state(self.READY)
             response.success = False
             response.message = 'recording service unavailable'
             return response
@@ -265,12 +269,14 @@ class PikaSessionManager(Node):
                 self._start_request()
             )
         except Exception as exc:
-            self._set_state(self.READY)
+            with self._lock:
+                self._set_state(self.READY)
             response.success = False
             response.message = f'recording START call failed: {exc}'
             return response
         if not recording_response.success:
-            self._set_state(self.READY)
+            with self._lock:
+                self._set_state(self.READY)
             response.success = False
             response.message = (
                 f'recording START rejected: {recording_response.message}'
@@ -292,6 +298,13 @@ class PikaSessionManager(Node):
             self.session_id = recording_response.session_id
             self.active[side] = True
             self._set_state(self.RECORDING)
+            if self._start_cancel_reason:
+                cancel_reason = self._start_cancel_reason
+                self._start_cancel_reason = ''
+                self._begin_stop(side, cancel_reason, skip_reset=True)
+                response.success = False
+                response.message = 'START cancelled; recording STOP requested'
+                return response
         response.success = True
         response.message = (
             f'recording started; {side.upper()} teleop allowed; '
@@ -301,7 +314,7 @@ class PikaSessionManager(Node):
         return response
 
     def _handle_stop(self, side: str, reason: str, response):
-        if reason not in ('USER_STOP', *self.ABNORMAL_REASONS):
+        if reason not in ('USER_STOP', 'START_CANCEL_STOP', *self.ABNORMAL_REASONS):
             response.success = False
             response.message = f'unsupported disable reason: {reason}'
             return response
@@ -309,6 +322,11 @@ class PikaSessionManager(Node):
             if self.state in (self.STOPPING, self.RESETTING, self.PREPARING):
                 response.success = True
                 response.message = f'episode stop already in progress: {self.state}'
+                return response
+            if self.state == self.STARTING:
+                self._start_cancel_reason = reason
+                response.success = True
+                response.message = 'START cancellation registered; STOP follows START result'
                 return response
             if self.state != self.RECORDING:
                 response.success = True
@@ -318,24 +336,36 @@ class PikaSessionManager(Node):
                 response.success = True
                 response.message = f'{side.upper()} teleop is not active'
                 return response
-            self.active = {name: False for name in self.SIDES}
-            self._abnormal_stop = reason in self.ABNORMAL_REASONS
-            self._stop_reason = reason
-            self._set_state(self.STOPPING)
-            self.force_stop_publisher.publish(Empty())
-            if not self.recording_client.service_is_ready():
-                self._set_state(self.FAILED)
+            # A pending second side must not suppress reset of the first side
+            # after that first side was already active.
+            skip_reset = reason == 'START_CANCEL_STOP' and not any(
+                self.active[name] for name in self.SIDES if name != side
+            )
+            if not self._begin_stop(side, reason, skip_reset=skip_reset):
                 response.success = False
                 response.message = 'recording STOP unavailable; session FAILED'
                 return response
-            request = self._recording_request(ManageRecording.Request.STOP)
-            self._stop_future = self.recording_client.call_async(request)
         response.success = True
         response.message = 'episode stop accepted; recording stop/reset in progress'
         self.get_logger().warning(
             f'{side.upper()} {reason}: {response.message}'
         )
         return response
+
+    def _begin_stop(self, side: str, reason: str, skip_reset: bool) -> bool:
+        """Called under the episode lock, including by a late START result."""
+        self.active = {name: False for name in self.SIDES}
+        self._abnormal_stop = reason in self.ABNORMAL_REASONS
+        self._skip_reset_after_stop = skip_reset
+        self._stop_reason = reason
+        self._set_state(self.STOPPING)
+        self.force_stop_publisher.publish(Empty())
+        if not self.recording_client.service_is_ready():
+            self._set_state(self.FAILED)
+            return False
+        request = self._recording_request(ManageRecording.Request.STOP)
+        self._stop_future = self.recording_client.call_async(request)
+        return True
 
     def _begin_prepare(self) -> None:
         self._prepare_future = None
@@ -404,6 +434,10 @@ class PikaSessionManager(Node):
                 f'Abnormal {self._stop_reason}: automatic MoveJ is forbidden'
             )
             self._set_state(self.FAILED)
+            return
+        if self._skip_reset_after_stop:
+            self.get_logger().info('Cancelled START: skipping automatic MoveJ')
+            self._begin_prepare()
             return
         self._begin_reset()
 

@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name, ['README.md']),
     ],
     install_requires=['setuptools'],
+    test_suite='test',
     zip_safe=True,
     maintainer='lei',
     maintainer_email='lei@example.com',

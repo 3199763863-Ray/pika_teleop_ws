@@ -1,5 +1,27 @@
 # 项目维护记录
 
+## 2026-10-09：脚踏板改为踩下切换启停
+
+现场原始 evdev 事件显示，用户持续踩住约 3 秒时，设备仍只给出约 40 ms 的 KEY_F3 按下/释放脉冲；因此原“按住运行、释放停止”会立即中断。现改为每次有效踩下切换：第一次按先左后右启动，第二次按停止；物理释放不影响启停。同批读取到按下和释放时按事件时间戳处理，以免系统调度延迟吞掉短脉冲。150 ms 重复触发保护可通过 `foot_pedal_retrigger_guard_ms` 调整；保留 30 ms 输入消抖、启动超时、迟到 START 补偿和设备失联保护。`/foot_pedal/pressed` 保留物理状态，新增 `/foot_pedal/enabled` 显示逻辑启停请求（不是双臂 ACTIVE 证明）。
+
+两份 launch 的 `start_foot_pedal` 默认设为 `true`，与部署机已有本地改动一致；原 Bag 命令加 `start_pika_official:=true`、`pika_ros_ws:=/home/user2/pika_ros` 可同时拉起脚踏节点。`start_foot_pedal:=false` 可临时关闭。更新根、bringup、Bridge 和脚踏包 README 与隔离假服务测试。停止后 Bag 4000 ms 归位交接仍按原流程执行；脚踏松开不会停机，仍须依赖第二次踩下、手动 STOP 或硬件急停。
+
+已同步至部署机并校验 25 个文件；`colcon build --symlink-install --packages-up-to pika_teleop_bringup` 的 9 个包成功。`ROS_DOMAIN_ID=211` 顺序运行脚踏 13 项（含同批 40 ms 脉冲）、Session Manager 2 项、Bag Virtual Receiver 11 项测试均通过，`colcon test-result` 为 0 错误/失败；两份 launch 的 `--show-args` 均显示脚踏默认 `true`、重复触发保护默认 `150.0`。首次并行运行时 Virtual Receiver 的 11 项断言通过但进程退出出现一次段错误，顺序复跑正常。未启动真机 launch、未触发 RealMan Action；用户下次启动才会加载新节点逻辑。
+
+## 2026-10-09：单脚踏板按住控制双臂
+
+基线为 `db79c0fcf0cb7bda3d1c9ed4003075b0043918c5`。旧本地工作副本有未提交改动，保留原样；本次在新的 `outputs/foot_pedal_repo` 实施，不执行 Git add/commit/push。
+
+- 新增 `src/pika_foot_pedal`：一个 evdev ROS 节点，30 ms 消抖、20 Hz `/foot_pedal/pressed`、启动已踩住须先松开、非阻塞读取。按下先请求左侧，等实际 State ACTIVE 后请求右侧；松开异步 STOP 已请求侧。START 拒绝/超时后停止并要求松开重试，不形成请求风暴。设备异常使用 `pedal_device_lost`。
+- Bridge `node.py` 增加默认开启的 `gesture_enabled`；脚踏 launch 时关闭夹爪双击/三击判定。手动服务在设备异常时映射 `STALE_STOP`，在未 ACTIVE 的 START 取消时映射 `START_CANCEL_STOP`；原 `reason=manual` 的正常 ACTIVE 停止仍为 `USER_STOP`。
+- Session Manager `node.py` 补上 STARTING 期间收到 STOP 的取消记录；迟到 Recorder START 成功后立即请求 STOP，跳过未实际启用时的自动 MoveJ。正常已 ACTIVE 的 USER_STOP/Recorder/MoveJ 路径不变。新增延迟 START 测试。
+- 两份 bringup launch 增加默认关闭的 `start_foot_pedal`，以及设备路径、键码、消抖参数，加入新包 Python 路径；Bag 已有 4000 ms handoff 与 Mapper 配置未改。
+- 更新根、Bridge、bringup 和新增包 README；新增脚踏开关消抖单元测试。
+
+部署与验证：同步至 `user2@192.168.31.97:/home/user2/pika_teleop_ws` 后，`colcon build --symlink-install` 构建涉及包成功，`ros2 pkg executables pika_foot_pedal` 能找到 `foot_pedal_node`。部署机安装 `python3-evdev`、配置仅匹配该 USB 脚踏的 udev 规则，已验证 user2 可读设备且 `active_keys()` 正常。两份 launch 的 `--show-args` 能解析脚踏参数，`gesture_enabled` 在脚踏开/关时分别求值为 false/true。
+
+隔离测试使用 `ROS_DOMAIN_ID=211` 与假服务/假 State，未连接现场 RealMan：脚踏包 11 项测试（物理消抖、Bridge 原因映射、先左后右、双侧停止、迟到 START 补偿、缺服务、真实 ROS graph 假服务）通过；Session Manager 2 项快速松脚/第二侧待启动测试通过；Bag Virtual Receiver 原有 11 项假 Action/reset 测试通过。独立节点打开实际 USB 设备并在隔离域发布 `/foot_pedal/pressed=false`；SIGINT 退出无堆栈。未执行真实踩踏、真机遥操、Recorder 真实落盘或 MoveJ 到位验收。脚踏进程被 SIGKILL、断电或 ROS 通信完全中断时无法保证 STOP 送达，须依靠外部命令 watchdog 与硬件急停。当前运行的 launch 未重启；新代码须在下次用户启动后生效。
+
 ## 2026-10-08：文档版本同步与备份整理
 
 **依据**：GitHub 与部署机 `/home/user2/pika_teleop_ws` 均为 `main`，执行时 HEAD `e6d8d40e9f66bde4d8b49f0440843f3cff58eade`。先读取现行源码、接口、两份 launch 与 YAML，再修文档。部署机原有一项未提交工作：`pika_bag_config.yam` 中 Virtual Receiver `state_timeout_ms` 从已提交的 `200.0` 改为 `2000.0`；本任务未改该文件，也未切换/重置分支。

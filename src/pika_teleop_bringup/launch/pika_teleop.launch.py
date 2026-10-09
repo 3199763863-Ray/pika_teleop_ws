@@ -14,8 +14,9 @@ from launch.actions import (
     DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction,
 )
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _local_python_path(packages):
@@ -72,11 +73,13 @@ def generate_launch_description() -> LaunchDescription:
     pika_ros_ws = LaunchConfiguration('pika_ros_ws')
     left_serial_port = LaunchConfiguration('left_serial_port')
     right_serial_port = LaunchConfiguration('right_serial_port')
+    start_foot_pedal = LaunchConfiguration('start_foot_pedal')
     local_env = {'PYTHONPATH': _local_python_path((
         'pika_teleop_bringup',
         'pika_session_manager', 'pika_teleop_bridge',
         'pika_realman_mapper', 'pika_teleop_interfaces',
         'realman_msgs', 'realman_recording_msgs',
+        'pika_foot_pedal',
     ))}
     # Flush Python stdout immediately so a crash or Ctrl-C loses no log lines.
     local_env['PYTHONUNBUFFERED'] = '1'
@@ -104,6 +107,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'right_serial_port', default_value='/dev/pika_gripper_right'
         ),
+        DeclareLaunchArgument('start_foot_pedal', default_value='true'),
+        DeclareLaunchArgument('foot_pedal_device',
+            default_value='/dev/input/by-id/usb-0483_5750-if01-event-kbd'),
+        DeclareLaunchArgument('foot_pedal_key_code', default_value='auto'),
+        DeclareLaunchArgument('foot_pedal_debounce_ms', default_value='30.0'),
+        DeclareLaunchArgument('foot_pedal_retrigger_guard_ms', default_value='150.0'),
         ExecuteProcess(
             cmd=[
                 sys.executable, '-m',
@@ -132,9 +141,28 @@ def generate_launch_description() -> LaunchDescription:
             package='pika_teleop_bridge',
             executable='pika_teleop_publisher',
             name='pika_teleop_publisher',
-            parameters=[config_path],
+            parameters=[config_path, {'gesture_enabled': ParameterValue(
+                PythonExpression(["'", start_foot_pedal, "' != 'true'"]),
+                value_type=bool,
+            )}],
             additional_env=local_env,
             output='both',
+        ),
+        Node(
+            package='pika_foot_pedal', executable='foot_pedal_node',
+            name='pika_foot_pedal',
+            parameters=[{
+                'device': LaunchConfiguration('foot_pedal_device'),
+                'key_code': LaunchConfiguration('foot_pedal_key_code'),
+                'debounce_ms': ParameterValue(
+                    LaunchConfiguration('foot_pedal_debounce_ms'), value_type=float
+                ),
+                'retrigger_guard_ms': ParameterValue(
+                    LaunchConfiguration('foot_pedal_retrigger_guard_ms'), value_type=float
+                ),
+            }],
+            condition=IfCondition(start_foot_pedal),
+            additional_env=local_env, output='both',
         ),
         Node(
             package='pika_realman_mapper',

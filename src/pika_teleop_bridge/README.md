@@ -23,6 +23,8 @@ Bridge 只在收到**新的**位姿样本时，用源时间戳计算相邻位置
 
 ## 手势、Service 与保护
 
+`gesture_enabled` 默认 `true`。两份 launch 在本机默认启用脚踏并将其设为 `false`，只关闭双击/三击识别；夹爪位置、手动服务、输入时效和跳变检查照常工作。脚踏板设备异常使用手动服务 `reason=pedal_device_lost`，Bridge 向下游发 `STALE_STOP`；启动尚在 `PENDING_START` 时再次踩下停止，发 `START_CANCEL_STOP` 防止迟到的 START 产生错误复位。详见 [脚踏板](../pika_foot_pedal/README.md)。
+
 一次点击是夹爪完成“开→合→开”。IDLE 双击申请 `USER_START`，ACTIVE 三击执行 `USER_STOP`。Bridge 是 `/pika_teleop/left|right/set_enabled`（`SetTeleopEnabled`）的客户端；正式模式由 Session Manager 提供服务，Bag 模式由 Virtual Receiver 提供。Bridge 自身还提供 `/pika_teleop/left|right/manual_enable`，供 [`scripts/pika_start.sh`](../../scripts/pika_start.sh) 和 [`scripts/pika_stop.sh`](../../scripts/pika_stop.sh) 使用。命令行入口请求启动/停止，真正进入 ACTIVE 仍取决于下游服务响应和输入有效性。
 
 正式模式订阅 `/pika_session/start_allowed`（`Bool`，reliable/transient-local）以限制新 START，也订阅 `/pika_session/force_stop_all`（`Empty`，reliable/volatile）以本地停止两侧。Bag 设置 `use_session_gate=false`。Bridge 不发布独立的 `event` Topic。
@@ -40,6 +42,7 @@ Bridge 只在收到**新的**位姿样本时，用源时间戳计算相邻位置
 | `velocity_max_dt_ms` | 50 | 150 | 150 | Bridge Twist 连续求导的最大时间差 |
 | `start_service_timeout_ms` | 10000 | 10000 | 10000 | START 服务响应最长等待 |
 | `use_session_gate` | true | true | false | 是否使用 Session START 准入 |
+| `gesture_enabled` | true | true（脚踏 launch 时 false） | true（脚踏 launch 时 false） | 是否识别夹爪双击/三击；不影响夹爪数值发布 |
 | `velocity_filter_cutoff_hz` | 10 | 10 | 10 | Bridge Twist 低通截止频率，Hz |
 | `max_position_jump_m` | 0.08 | 0.08 | 0.08 | ACTIVE 时新 Pose 最大位置跳变 |
 | `max_rotation_jump_deg` | 45 | 45 | 45 | ACTIVE 时新 Pose 最大姿态跳变 |
