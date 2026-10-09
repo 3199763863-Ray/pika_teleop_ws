@@ -56,3 +56,15 @@ pika_teleop_virtual_receiver:
   ros__parameters:
     accept_start: true
     state_timeout_ms: 2000.0
+    # Bag-only normal USER_STOP reset; independent of the formal-mode YAML.
+    reset_on_user_stop: true
+    left_reset_action: "/l/execute_motion"
+    right_reset_action: "/r/execute_motion"
+    left_reset_joint_degrees: [12.172, 25.223, 73.054, -16.703, 80.307, 14.455]
+    right_reset_joint_degrees: [-9.89, 18.046, 79.074, 15.505, 79.606, -6.194]
+    reset_velocity_percent: 10
+    reset_blend_radius_percent: 0
+    reset_timeout_sec: 120.0
+    # Trial delay: the external velocity router times out after 3000 ms.
+    reset_dispatch_delay_ms: 4000.0
+    reset_stop_confirm_timeout_ms: 1000.0

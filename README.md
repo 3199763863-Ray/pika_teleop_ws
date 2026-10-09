@@ -1,6 +1,6 @@
 # Pika 双手遥操与 RealMan 数据采集接口
 
-本仓库接收 Pika 双 Sense 的位姿和夹爪数据，生成左右 RealMan 的笛卡尔目标，并在正式模式中协调录制和正常结束后的回零。本仓库**不包含 RealMan 速度接收器、机器人 SDK 控制进程或 Recorder 的落盘实现**。接口已定义不代表外部设备和数据集已完成端到端验证。
+本仓库接收 Pika 双 Sense 的位姿和夹爪数据，生成左右 RealMan 的笛卡尔目标。正式模式协调录制和正常结束后的回零；Bag 模式可在单侧正常停止后异步发送该侧复位 Goal。本仓库**不包含 RealMan 速度接收器、机器人 SDK 控制进程或 Recorder 的落盘实现**。接口已定义不代表外部设备和数据集已完成端到端验证。
 
 ## 运行环境
 
@@ -27,15 +27,16 @@ flowchart LR
   G -->|Bag/Demo| V[Virtual Receiver]
   S <-->|PREPARE / START / STOP| R[外部 Recorder]
   S -->|正常结束 MoveJ| A[外部左右 Action Server]
+  V -->|仅该侧 USER_STOP 且已确认 ACTIVE| A
   T[外部 RealMan TF] -->|正式模式每侧启用时读取一次| M
 ```
 
 | 模式 | Launch | 本仓库启动的节点 | 外部依赖 |
 |---|---|---|---|
 | 正式 | `pika_teleop.launch.py` | Session Manager、Bridge、Mapper | 官方 Pika 输入、RealMan TCP TF、Recorder、左右回零 Action、实际运动接收器 |
-| Bag/Demo | `pika_bag.launch.py` | Virtual Receiver、Bridge、Mapper | 官方 Pika 输入；用配置的 TCP 起点代替 RealMan TF |
+| Bag/Demo | `pika_bag.launch.py` | Virtual Receiver、Bridge、Mapper | 官方 Pika 输入；用配置的 TCP 起点代替 RealMan TF；启用正常 STOP 复位时需要对应 RealMan Action Server |
 
-两模式提供同名 `/pika_teleop/left|right/set_enabled` 服务，**不能同时运行**。Bag launch 不启动 Recorder、Session Manager、回零 Action，也不会自动执行 `ros2 bag record`。两份 launch 默认 `start_pika_official:=false`；若官方节点已运行，不要再将其设为 `true`。设为 `true` 时，launch 使用进程组 supervisor 启动官方栈，并在退出时清理该组子进程；这项清理不解决官方位姿断流或定位质量问题。
+两模式提供同名 `/pika_teleop/left|right/set_enabled` 服务，**不能同时运行**。Bag launch 不启动 Recorder、Session Manager 或 Action Server，也不会自动执行 `ros2 bag record`；Virtual Receiver 在正常 USER_STOP 后可向外部 Action Server 发 Goal。两份 launch 默认 `start_pika_official:=false`；若官方节点已运行，不要再将其设为 `true`。设为 `true` 时，launch 使用进程组 supervisor 启动官方栈，并在退出时清理该组子进程；这项清理不解决官方位姿断流或定位质量问题。
 
 ## 八个 Package
 
@@ -45,7 +46,7 @@ flowchart LR
 | `pika_teleop_bridge` | 缓存四路官方输入、双击/三击、输入时效与跳变检查、固定预变换、左右 State |
 | `pika_realman_mapper` | 共享 Pika 基准标定、每侧启动零位、Pose/速度/夹爪目标与虚拟 TF |
 | `pika_session_manager` | 正式模式的全局录制 episode、准入、停止与正常结束回零 |
-| `pika_teleop_virtual_receiver` | Bag 模式的启停服务及 State 接收 watchdog；不控制机器人 |
+| `pika_teleop_virtual_receiver` | Bag 模式的启停服务、State watchdog，以及可选的单侧正常 STOP 复位 Goal |
 | `pika_teleop_bringup` | 两份 launch、supervisor 与两份 `.yam` 配置 |
 | `realman_msgs` | 外部 RealMan 控制与回零所需的接口定义 |
 | `realman_recording_msgs` | 外部 Recorder 的管理服务和状态消息定义 |
@@ -65,6 +66,8 @@ Mapper 对已启用且有效的侧以 **20 Hz** 发布 `/pika/l|r/cartesian_pose
 左右双击或 `scripts/pika_start.sh` 发起 START，三击或 `scripts/pika_stop.sh` 发起 USER_STOP。脚本调用 Bridge 的 `/pika_teleop/left|right/manual_enable`；Bridge 再调用本模式的 `/pika_teleop/left|right/set_enabled`。正式模式还通过 `/pika_session/start_allowed` 限制新 START，并以 `/pika_session/state` 报告全局状态。
 
 正式模式主流程：`PREPARING → READY → STARTING → RECORDING → STOPPING → RESETTING → PREPARING`。首次 START 要等待外部 Recorder 成功返回；另一侧可加入同一 recording session。任一侧正常 USER_STOP 会结束整个 episode：先停止两侧，再请求 Recorder STOP；成功后通过外部 `/l/execute_motion`、`/r/execute_motion` 并行 MoveJ 回零。`STALE_STOP` 或 `POSE_JUMP_STOP` 会停止录制并进入 `FAILED`，**不会自动 MoveJ**。录制或回零失败也进入 `FAILED`，需人工排查并重启 Session Manager。`middle_reset_joint_degrees` 仅校验保存，当前不发送中臂 Action。
+
+Bag 模式的 `reset_on_user_stop=true` 只处理**已确认 ACTIVE 的该侧**正常 `USER_STOP`：Virtual Receiver 接受 STOP 后等待该请求之后的新 disabled State，再按 Bag YAML 的 `reset_dispatch_delay_ms`（当前试验值 4000 ms）延迟，向该侧 `/l/execute_motion` 或 `/r/execute_motion` 异步发送预设六关节 `MOVEJ` Goal。`STALE_STOP`、`POSE_JUMP_STOP`、watchdog 超时、未真正启动、重复 STOP 均不会触发复位；缺失 Action Server 只告警，不影响 STOP。**Goal 发出或被接受都不代表实际回到预设关节角**；节点不等待动作结果。必须现场确认对应机械臂已停止运动后，才能再次 START。可在 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam) 将 `reset_on_user_stop` 设为 `false` 关闭此功能。
 
 Bridge 原始输入超时会停止该侧；Mapper 的 State watchdog 会停止对应目标并要求重新启用；外部 RealMan 接收器仍需自己实现命令超时、限位和急停。Recorder 真正写盘、相机健康和真机响应由外部系统负责，单凭本仓库代码无法证明。
 
@@ -106,9 +109,9 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py
 | Mapper 卡尔曼 / 低通 | 关 / 10 Hz | 开 / 10 Hz | 开 / 10 Hz |
 | 线速度 / 角速度死区 | 0.02 m/s / 0.03 rad/s | **0.005 m/s / 0.012 rad/s** | **0.005 m/s / 0.012 rad/s** |
 | 夹爪全开原始值 | 0.1 | 0.0967 | 0.0967 |
-| Virtual Receiver `state_timeout_ms` | 100 ms | 不启动 | 200 ms（已提交 YAML） |
+| Virtual Receiver `state_timeout_ms` | 100 ms | 不启动 | **2000 ms** |
 
-PoseJump 使用代码默认 `0.08 m`、`45°`。正式模式 `require_realman_start_tf=true`，Bag 为 `false`。配置文件为 [正式 YAML](src/pika_teleop_bringup/config/ros/pika_config.yam) 与 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam)；参数含义见 [Bridge](src/pika_teleop_bridge/README.md)、[Mapper](src/pika_realman_mapper/README.md) 和 [Bringup](src/pika_teleop_bringup/README.md)。修改配置后重启 launch；非软链接构建还需重建安装目录。
+PoseJump 使用代码默认 `0.08 m`、`45°`。正式模式 `require_realman_start_tf=true`，Bag 为 `false`。Bag 复位关节角和 Action 参数已单独复制进 Bag YAML，运行时不读取正式 YAML。配置文件为 [正式 YAML](src/pika_teleop_bringup/config/ros/pika_config.yam) 与 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam)；参数含义见 [Bridge](src/pika_teleop_bridge/README.md)、[Mapper](src/pika_realman_mapper/README.md) 和 [Bringup](src/pika_teleop_bringup/README.md)。修改配置后重启 launch；非软链接构建还需重建安装目录。
 
 ## 检查与日志
 

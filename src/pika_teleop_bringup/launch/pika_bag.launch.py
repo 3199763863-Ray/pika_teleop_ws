@@ -76,6 +76,7 @@ def generate_launch_description() -> LaunchDescription:
         'pika_teleop_bringup',
         'pika_teleop_bridge', 'pika_realman_mapper',
         'pika_teleop_virtual_receiver', 'pika_teleop_interfaces',
+        'realman_msgs',
     ))}
     # Flush Python stdout immediately so a crash or Ctrl-C loses no log lines.
     local_env['PYTHONUNBUFFERED'] = '1'

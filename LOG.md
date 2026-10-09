@@ -55,3 +55,33 @@
 - 正式 TCP 起点使用 TF 缓冲区的最新可用变换；当前代码没有单独的 TF 最大年龄检查。外部 TF 停止更新时需确认实际行为。
 - 正式 Bridge 50 ms stale 阈值与 20 Hz State 周期同量级；在官方位姿卡顿或网络延迟时可能频繁触发停机。已有部署反馈称 Pika 位姿读取卡顿和 Wi-Fi 问题仍未定位。本次只记录，不改保护值。
 - 外部 Recorder 的实际落盘、相机数据、RealMan 真机动作、速度方向、急停、回零与长期稳定性均需在现场另行验证。
+
+## 2026-10-08：Bag 正常停止后的单侧 MoveJ Goal
+
+**基线**：本次从干净的 `main` `1f06d5d36c6b3b30979e1a562f57ed5b030ba0a0` 独立检出。该提交的 Bag YAML 已包含 Virtual Receiver `state_timeout_ms=2000.0`；上节记录的“未提交 200→2000”是当时的历史状态，本次未改写旧记录。正式配置 `pika_config.yam`、Session Manager、Bridge、Mapper 均未修改。
+
+### 实现与文件
+
+- `receiver_node.py`、新增 `reset_handoff.py`：Virtual Receiver 只在 `reset_on_user_stop=true` 时建立 Action Client。每侧独立记录本轮已确认 ACTIVE；仅已确认 ACTIVE 的 `USER_STOP` 建立待复位，等待请求之后的新 disabled State，再非阻塞延迟派发单侧 MoveJ。确认超时、矛盾 State、watchdog 或异常 STOP 取消；重复 STOP 不重复发送。Action 不可用、发送失败或拒绝只记录告警，STOP 仍回执成功。只观察 Goal 接受/拒绝，**不获取 Action Result，也不判断物理到位**。
+- `pika_bag_config.yam`：将左右复位 Action 名、六关节角和 Goal 参数从正式 YAML 的当前值复制为 Bag 独立配置，并启用功能；保留原有 2000 ms State watchdog 与遥操频率等值。`reset_on_user_stop=false` 可退回原 Bag 行为。
+- `pika_bag.launch.py`、Virtual Receiver `package.xml`：补齐 Bag 运行时 `realman_msgs` 的 Python 路径与依赖。`setup.py` 和新增 `test/`：接入状态交接与假 Action Server 测试。
+- 根 README、Virtual Receiver README、Bringup README：说明触发条件、单侧行为、配置、人工确认、外部 Action Server 及现场验证步骤；将 Bag watchdog 现行值统一修正为 2000 ms。
+
+### 已执行检查
+
+- Windows 本地 `python -m unittest discover -s src/pika_teleop_virtual_receiver/test -p 'test_*.py' -v`：5 项纯逻辑测试通过；6 项 ROS 集成测试因本机没有 ROS Python 包而跳过。
+- 部署机仅在 `/tmp/pika_bag_reset_test_20261008` 的**隔离测试工作区**执行 `colcon build --symlink-install --packages-up-to pika_teleop_bringup`：8 个包构建通过；`realman_msgs.action.ExecuteMotion` 导入通过。另用 Bag launch 的 `_local_python_path(...)` 生成子进程环境，Action 类型导入通过。
+- 同一隔离目录执行 `colcon test --packages-select pika_teleop_virtual_receiver`：11 项通过，包含独立 ROS 域中的假 Action Server 接受且不结束动作、服务端缺失、拒绝 Goal、发送异常、关闭开关和非法关节配置校验。`colcon test-result --verbose` 读到 0 项，因为该包的 unittest 运行器没有生成 JUnit XML；测试实际结果见 `colcon test` 输出。
+- `git diff --check` 通过；静态检索确认 Virtual Receiver 未调用 `get_result_async()`、同步 Action 等待或阻塞 `sleep`。
+
+### 限制与风险
+
+- 未启动官方 Pika、Recorder 或真机机械臂；未验证预设关节角的实际安全性、外部 Action Server 的响应和物理到位。临时测试代码没有部署到 `/home/user2/pika_teleop_ws`。
+- 新 disabled State 加交接延迟仅降低与实时速度发布的竞态，不能原子保证外部 RealMan 接收器已停速。Goal 发出后不等待执行结果，用户必须现场确认本侧 MoveJ 完成后才再次 START；下游仍须提供互斥、限位和急停。
+- 本次没有提交或推送；工作区保留改动供人工审查。
+
+## 2026-10-09：Bag 复位派发延迟试验
+
+- 现场三次右侧 `USER_STOP` 均成功下发 MoveJ Goal，但 RealMan 驱动拒绝，工控机日志为 `Rejecting motion goal: arm r is busy`。行为树 Pika 速度 router 不接收 `USER_STOP`，只在速度输入停止 3000 ms 后开始取消速度 Action；原 Bag 交接延迟 150 ms 早于右臂释放。
+- 将 Bag YAML 的可调项 `reset_dispatch_delay_ms` 设为 **4000.0 ms**，从新 disabled State 被确认时开始计时；正式 YAML 和 Virtual Receiver 的独立运行代码默认值不变。同步更新三个 README 的当前值。
+- 这是等待外部 router 超时的现场试验值，不是释放右臂所有权的确认。若其他控制端仍占用右臂，或取消耗时超过余量，MoveJ 仍可能被拒绝；长期方案需明确取消速度 Action 并确认释放后再归位。

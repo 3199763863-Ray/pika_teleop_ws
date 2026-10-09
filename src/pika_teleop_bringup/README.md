@@ -7,9 +7,11 @@
 | 模式 | 本仓库启动的节点 | 起点和外部依赖 |
 |---|---|---|
 | 正式 | `pika_session_manager`、`pika_teleop_publisher`、`pika_realman_mapper` | Mapper 每侧启用时必须读取 RealMan TCP TF；Session Manager 需要外部 Recorder 和左右回零 Action；运动接收器也在本仓库之外 |
-| Bag/Demo | `pika_teleop_virtual_receiver`、`pika_teleop_publisher`、`pika_realman_mapper` | 使用配置 TCP 起点；无 Session Manager、Recorder 和自动回零 |
+| Bag/Demo | `pika_teleop_virtual_receiver`、`pika_teleop_publisher`、`pika_realman_mapper` | 使用配置 TCP 起点；无 Session Manager 或 Recorder；正常 STOP 的可选单侧 MoveJ 依赖外部对应侧 Action Server |
 
 两模式均由 Bridge 订阅官方 `/pika_pose_l|r` 和 `/gripper_l|r/joint_state`，以 20 Hz 发布 State；Mapper 对有效侧以 20 Hz 发布 Pose/速度，夹爪命令独立限频为最多 4 Hz。Bag launch 不自动调用 `ros2 bag record`，也不模拟双击。两个 launch 使用相同的 `set_enabled` 服务名，不能同时运行。
+
+Bag YAML 默认 `reset_on_user_stop: true`。该模式只有已确认 ACTIVE 的某一侧收到三击或 `scripts/pika_stop.sh <side>` 形成的 `USER_STOP` 时，才等待新 disabled State 和可配置的交接延迟（`reset_dispatch_delay_ms` 当前试验值 4000 ms），再向 `/l/execute_motion` 或 `/r/execute_motion` 异步下发**该侧**预设六关节 MoveJ。关节角、Action 名、速度和交接时长都直接写在 [`pika_bag_config.yam`](config/ros/pika_bag_config.yam)，运行时不读取正式配置。需要维持旧 Bag 行为时，把 `reset_on_user_stop` 改为 `false` 并重启 Bag launch。缺少 Action Server 时 STOP 仍成功，只有复位被跳过并告警；Goal 发出/接受不代表运动完成，必须现场确认 MoveJ 已结束后才再次 START。
 
 ## 构建与启动
 
@@ -49,7 +51,7 @@ Bag 模式将命令中的 `pika_teleop.launch.py` 换成 `pika_bag.launch.py`。
 
 ## 参数边界
 
-正式 YAML：Bridge State 20 Hz、`stale_stop_ms` 未写入而使用代码默认 **50 ms**；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=true`。Bag YAML：Bridge State 20 Hz、`stale_stop_ms=2000 ms`；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=false`；已提交的 Virtual Receiver watchdog 为 200 ms。部署机 2026-10-08 的未提交 Bag 配置把最后一项改为 **2000 ms**，本任务保留该值。完整对照见 [根 README](../../README.md) 与各节点 README。
+正式 YAML：Bridge State 20 Hz、`stale_stop_ms` 未写入而使用代码默认 **50 ms**；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=true`。Bag YAML：Bridge State 20 Hz、`stale_stop_ms=2000 ms`；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=false`；Virtual Receiver watchdog 已提交值为 **2000 ms**。完整对照见 [根 README](../../README.md) 与各节点 README。
 
 正式模式 Pose `frame_id` 是 `l/base_link`、`r/base_link`，Bag Pose 是 `l/work/pikabase`、`r/work/pikabase`；两模式速度消息均用 `l/work/pikabase`、`r/work/pikabase`。`l/link_6`、`r/link_6` 是正式模式启动时查询的 TCP TF。外部接收器需要按自己的 TF 约定解释这些名称，不能从字符串相似推断等价。
 

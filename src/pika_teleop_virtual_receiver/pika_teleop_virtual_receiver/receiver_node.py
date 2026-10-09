@@ -6,8 +6,10 @@ import time
 from typing import Dict, List, Optional
 
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -17,6 +19,8 @@ from rclpy.qos import (
 
 from pika_teleop_interfaces.msg import PikaTeleopState
 from pika_teleop_interfaces.srv import SetTeleopEnabled
+
+from .reset_handoff import ResetHandoff
 
 
 NANOSECONDS_PER_MILLISECOND = 1_000_000
@@ -50,12 +54,24 @@ class PikaTeleopVirtualReceiver(Node):
     SIDES = ('left', 'right')
     QUATERNION_EPSILON = 1.0e-12
 
-    def __init__(self) -> None:
-        super().__init__('pika_teleop_virtual_receiver')
+    def __init__(self, **kwargs) -> None:
+        super().__init__('pika_teleop_virtual_receiver', **kwargs)
         self.declare_parameter('state_transition_warn_ms', 100.0)
         self.declare_parameter('state_timeout_ms', 100.0)
         self.declare_parameter('accept_start', True)
         self.declare_parameter('periodic_summary', False)
+        self.declare_parameter('reset_on_user_stop', False)
+        self.declare_parameter('left_reset_action', '/l/execute_motion')
+        self.declare_parameter('right_reset_action', '/r/execute_motion')
+        for side in self.SIDES:
+            self.declare_parameter(
+                f'{side}_reset_joint_degrees', Parameter.Type.DOUBLE_ARRAY
+            )
+        self.declare_parameter('reset_velocity_percent', 10)
+        self.declare_parameter('reset_blend_radius_percent', 0)
+        self.declare_parameter('reset_timeout_sec', 120.0)
+        self.declare_parameter('reset_dispatch_delay_ms', 150.0)
+        self.declare_parameter('reset_stop_confirm_timeout_ms', 1000.0)
 
         self.state_transition_warn_ms = self._positive_parameter(
             'state_transition_warn_ms'
@@ -65,6 +81,51 @@ class PikaTeleopVirtualReceiver(Node):
         self.periodic_summary = bool(
             self.get_parameter('periodic_summary').value
         )
+        self.reset_on_user_stop = bool(
+            self.get_parameter('reset_on_user_stop').value
+        )
+        if self.reset_on_user_stop:
+            from realman_msgs.action import ExecuteMotion
+
+            self._execute_motion_type = ExecuteMotion
+            self.reset_actions = {
+                side: self._string_parameter(f'{side}_reset_action')
+                for side in self.SIDES
+            }
+            self.reset_joints = {
+                side: self._array_parameter(f'{side}_reset_joint_degrees', 6)
+                for side in self.SIDES
+            }
+            self.reset_velocity_percent = self._percentage_parameter(
+                'reset_velocity_percent'
+            )
+            self.reset_blend_radius_percent = self._percentage_parameter(
+                'reset_blend_radius_percent'
+            )
+            self.reset_timeout_sec = self._positive_parameter('reset_timeout_sec')
+            dispatch_delay_ms = self._nonnegative_parameter(
+                'reset_dispatch_delay_ms'
+            )
+            confirm_timeout_ms = self._positive_parameter(
+                'reset_stop_confirm_timeout_ms'
+            )
+            self._reset_handoffs = {
+                side: ResetHandoff(
+                    int(confirm_timeout_ms * NANOSECONDS_PER_MILLISECOND),
+                    int(dispatch_delay_ms * NANOSECONDS_PER_MILLISECOND),
+                )
+                for side in self.SIDES
+            }
+            self._reset_clients = {
+                side: ActionClient(
+                    self, self._execute_motion_type, self.reset_actions[side]
+                )
+                for side in self.SIDES
+            }
+        else:
+            self._reset_handoffs = {}
+            self._reset_clients = {}
+        self._reset_goal_futures = {}
         self._transition_warn_ns = int(
             self.state_transition_warn_ms * NANOSECONDS_PER_MILLISECOND
         )
@@ -128,12 +189,42 @@ class PikaTeleopVirtualReceiver(Node):
                 self.accept_start,
             )
         )
+        if self.reset_on_user_stop:
+            self.get_logger().warning(
+                'Bag USER_STOP reset enabled: MoveJ Goal is fire-and-forget. '
+                'Confirm physical motion has finished before restarting that side.'
+            )
 
     def _positive_parameter(self, name: str) -> float:
         value = float(self.get_parameter(name).value)
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f'{name} must be finite and positive')
         return value
+
+    def _nonnegative_parameter(self, name: str) -> float:
+        value = float(self.get_parameter(name).value)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'{name} must be finite and non-negative')
+        return value
+
+    def _string_parameter(self, name: str) -> str:
+        value = str(self.get_parameter(name).value).strip()
+        if not value:
+            raise ValueError(f'{name} must not be empty')
+        return value
+
+    def _percentage_parameter(self, name: str) -> int:
+        value = int(self.get_parameter(name).value)
+        if value < 0 or value > 100:
+            raise ValueError(f'{name} must be in [0, 100]')
+        return value
+
+    def _array_parameter(self, name: str, size: int):
+        raw = self.get_parameter(name).value
+        values = () if raw is None else tuple(float(value) for value in raw)
+        if len(values) != size or not all(math.isfinite(v) for v in values):
+            raise ValueError(f'{name} must contain {size} finite values')
+        return values
 
     @staticmethod
     def _stamp_text(stamp) -> str:
@@ -193,6 +284,18 @@ class PikaTeleopVirtualReceiver(Node):
         status.last_state_receipt_ns = now_ns
         status.rx_count += 1
         status.safe_stop = False
+        if self.reset_on_user_stop:
+            event = self._reset_handoffs[side].state(
+                bool(message.enabled), bool(message.valid), status.rx_count, now_ns
+            )
+            if event == 'confirmed':
+                self.get_logger().info(
+                    f'{side.upper()} RESET STOP confirmed by new disabled State'
+                )
+            elif event:
+                self.get_logger().warning(
+                    f'{side.upper()} RESET CANCELED: {event}'
+                )
         state_flags = (bool(message.enabled), bool(message.valid))
         if state_flags != status.last_logged_state:
             gate = 'ACCEPTED' if all(state_flags) else 'BLOCKED'
@@ -217,6 +320,14 @@ class PikaTeleopVirtualReceiver(Node):
 
     def _service_callback(self, side: str, request, response):
         status = self.status[side]
+        if (
+            request.enable and self.reset_on_user_stop
+            and self._reset_handoffs[side].pending is not None
+        ):
+            response.success = False
+            response.message = 'START rejected: STOP-to-reset handoff in progress'
+            self.get_logger().warning(f'{side.upper()} {response.message}')
+            return response
         if request.enable and not self.accept_start:
             response.success = False
             response.message = 'START rejected by virtual receiver'
@@ -232,6 +343,18 @@ class PikaTeleopVirtualReceiver(Node):
         status.transition_start_rx_count = status.rx_count
         status.transition_pending = True
         status.transition_warned = False
+        if self.reset_on_user_stop:
+            handoff = self._reset_handoffs[side]
+            if request.enable:
+                handoff.start(status.rx_count)
+            elif handoff.stop(request.reason, status.rx_count, now_ns):
+                self.get_logger().info(
+                    f'{side.upper()} RESET pending: waiting for new disabled State'
+                )
+            elif not request.enable and request.reason != 'USER_STOP':
+                self.get_logger().info(
+                    f'{side.upper()} RESET skipped/canceled: {request.reason}'
+                )
         response.success = True
         response.message = '%s %s accepted' % (
             side.upper(),
@@ -248,6 +371,62 @@ class PikaTeleopVirtualReceiver(Node):
         )
         return response
 
+    def _reset_goal(self, side: str):
+        ExecuteMotion = self._execute_motion_type
+        goal = ExecuteMotion.Goal()
+        goal.command = ExecuteMotion.Goal.MOVEJ
+        goal.reference_type = ExecuteMotion.Goal.BASE
+        goal.reference_name = 'base'
+        goal.joint_degrees = list(self.reset_joints[side])
+        goal.pose_position_m = [0.0, 0.0, 0.0]
+        goal.pose_quaternion_wxyz = [1.0, 0.0, 0.0, 0.0]
+        goal.velocity_percent = self.reset_velocity_percent
+        goal.blend_radius_percent = self.reset_blend_radius_percent
+        goal.connect = False
+        goal.timeout_sec = float(self.reset_timeout_sec)
+        return goal
+
+    def _dispatch_reset(self, side: str) -> None:
+        client = self._reset_clients[side]
+        try:
+            if not client.server_is_ready():
+                self.get_logger().warning(
+                    f'{side.upper()} RESET NOT SENT: Action server unavailable '
+                    f'({self.reset_actions[side]})'
+                )
+                return
+            future = client.send_goal_async(self._reset_goal(side))
+            self._reset_goal_futures[side] = future
+            future.add_done_callback(
+                lambda completed, side=side: self._reset_goal_response(
+                    side, completed
+                )
+            )
+            self.get_logger().info(
+                f'{side.upper()} RESET Goal sent to {self.reset_actions[side]}; '
+                'motion completion is not monitored'
+            )
+        except Exception as exc:
+            self.get_logger().error(f'{side.upper()} RESET NOT SENT: {exc}')
+
+    def _reset_goal_response(self, side: str, future) -> None:
+        try:
+            goal_handle = future.result()
+            if goal_handle is not None and goal_handle.accepted:
+                self.get_logger().info(
+                    f'{side.upper()} RESET Goal accepted; physical completion '
+                    'is not monitored'
+                )
+            else:
+                self.get_logger().warning(f'{side.upper()} RESET Goal rejected')
+        except Exception as exc:
+            self.get_logger().error(
+                f'{side.upper()} RESET Goal response failed: {exc}'
+            )
+        finally:
+            if self._reset_goal_futures.get(side) is future:
+                self._reset_goal_futures.pop(side, None)
+
     def _monitor_tick(self) -> None:
         now_ns = time.monotonic_ns()
         for side in self.SIDES:
@@ -260,6 +439,11 @@ class PikaTeleopVirtualReceiver(Node):
                 status.safe_stop = True
                 if not status.watchdog_active:
                     status.watchdog_active = True
+                    if self.reset_on_user_stop:
+                        if self._reset_handoffs[side].invalidate():
+                            self.get_logger().warning(
+                                f'{side.upper()} RESET CANCELED: State watchdog timeout'
+                            )
                     self.get_logger().warning(
                         '%s WATCHDOG TIMEOUT: no state for > %.1f ms; '
                         'safe_stop=true control_gate=BLOCKED'
@@ -271,6 +455,15 @@ class PikaTeleopVirtualReceiver(Node):
                 self.get_logger().info(
                     f'{side.upper()} WATCHDOG RECOVERED: state reception resumed'
                 )
+
+            if self.reset_on_user_stop:
+                event = self._reset_handoffs[side].tick(now_ns)
+                if event == 'dispatch':
+                    self._dispatch_reset(side)
+                elif event:
+                    self.get_logger().warning(
+                        f'{side.upper()} RESET CANCELED: {event}'
+                    )
 
             if status.transition_pending:
                 state = status.latest_state
