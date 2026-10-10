@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import Future
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -34,6 +35,12 @@ def test_stop_during_starting_compensates_without_movej():
         manager._start_cancel_reason = ''
         manager._abnormal_stop = False
         manager._skip_reset_after_stop = False
+        manager.reset_on_user_stop = True
+        manager.reset_dispatch_delay_ns = 0
+        manager.stop_state_timeout_ns = 6_000_000_000
+        manager.get_clock = lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=100)
+        )
         manager.recording_client = Recorder()
         manager.force_stop_publisher = SimpleNamespace(publish=lambda _: None)
         manager._set_state = lambda state: setattr(manager, 'state', state)
@@ -64,7 +71,9 @@ def test_stop_during_starting_compensates_without_movej():
             ManageRecording.Request.START, ManageRecording.Request.STOP
         ]
         manager.recording_client.stop.set_result(SimpleNamespace(success=True))
-        manager._poll_stop()
+        now_ns = time.monotonic_ns()
+        manager._poll_recorder_stop(now_ns)
+        manager._poll_stop(now_ns)
         assert manager.state == manager.PREPARING
     asyncio.run(scenario())
 
@@ -81,6 +90,12 @@ class TestStartCancel(unittest.TestCase):
         manager._start_cancel_reason = ''
         manager._abnormal_stop = False
         manager._skip_reset_after_stop = False
+        manager.reset_on_user_stop = True
+        manager.reset_dispatch_delay_ns = 0
+        manager.stop_state_timeout_ns = 6_000_000_000
+        manager.get_clock = lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=100)
+        )
         stop_future = Future()
         manager.recording_client = SimpleNamespace(
             service_is_ready=lambda: True,
@@ -98,5 +113,8 @@ class TestStartCancel(unittest.TestCase):
         )
         assert response.success
         stop_future.set_result(SimpleNamespace(success=True))
-        manager._poll_stop()
+        now_ns = time.monotonic_ns()
+        manager._both_disabled_ns = now_ns
+        manager._poll_recorder_stop(now_ns)
+        manager._poll_stop(now_ns)
         assert reset == [True]

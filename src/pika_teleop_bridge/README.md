@@ -38,7 +38,7 @@ Bridge 只在收到**新的**位姿样本时，用源时间戳计算相邻位置
 | 参数 | 代码默认 | 正式生效 | Bag 生效 | 用途 |
 |---|---:|---:|---:|---|
 | `state_rate_hz` | 100 | **20** | **20** | State 发布与手势检查周期，Hz |
-| `stale_stop_ms` | **50** | **50**（YAML 未写） | **2000** | Pose 或夹爪最大允许年龄；放宽会延长断流后的容忍时间 |
+| `stale_stop_ms` | **50** | **1000** | **2000** | Pose 或夹爪最大允许年龄；放宽会延长断流后的容忍时间 |
 | `velocity_max_dt_ms` | 50 | 150 | 150 | Bridge Twist 连续求导的最大时间差 |
 | `start_service_timeout_ms` | 10000 | 10000 | 10000 | START 服务响应最长等待 |
 | `use_session_gate` | true | true | false | 是否使用 Session START 准入 |
@@ -49,7 +49,7 @@ Bridge 只在收到**新的**位姿样本时，用源时间戳计算相邻位置
 | `gripper_open_threshold` / `gripper_close_threshold` | 0.075 / 0.025 | 同默认 | 同默认 | 手势开合迟滞；与 Mapper 夹爪百分比标定无关 |
 | `click_max_interval_ms` / `gesture_reset_timeout_ms` | 450 / 1200 | 同默认 | 同默认 | 点击合并与手势清空时间 |
 
-正式 50 ms 与 Bag 2000 ms 差别很大。若经常出现 `INPUT_UNUSABLE pose_age_ms=...`，先确认源 Topic、时间戳、QoS 和实际年龄，再决定是否调整超时。改 YAML 后重启对应 launch。
+正式 1000 ms 与 Bag 2000 ms 分别由 YAML 指定。若经常出现 `INPUT_UNUSABLE pose_age_ms=...`，先确认源 Topic、时间戳、QoS 和实际年龄，再决定是否调整超时。改 YAML 后重启对应 launch。
 
 ## 检查
 

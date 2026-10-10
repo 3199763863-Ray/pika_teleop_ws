@@ -2,13 +2,14 @@ pika_teleop_publisher:
   ros__parameters:
     velocity_max_dt_ms: 150.0
     state_rate_hz: 20.0
+    stale_stop_ms: 2000.0
     use_session_gate: true
     start_service_timeout_ms: 10000.0
 
 pika_realman_mapper:
   ros__parameters:
     command_rate_hz: 20.0
-    state_timeout_ms: 200.0
+    state_timeout_ms: 2000.0
     left_base_frame: "l/base_link"
     right_base_frame: "r/base_link"
     # Each double-click reads these TCP transforms once.  The session does not
@@ -66,6 +67,9 @@ pika_session_manager:
     recording_duration_sec: 0
     record_cameras: true
     prepare_retry_sec: 2.0
+    reset_on_user_stop: true
+    reset_dispatch_delay_ms: 4000.0
+    stop_state_timeout_ms: 6000.0
     left_reset_action: "/l/execute_motion"
     right_reset_action: "/r/execute_motion"
     left_reset_joint_degrees: [12.172, 25.223, 73.054, -16.703, 80.307, 14.455]

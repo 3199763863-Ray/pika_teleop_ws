@@ -19,6 +19,7 @@ from rclpy.qos import (
 )
 from std_msgs.msg import Bool, Empty, String
 
+from pika_teleop_interfaces.msg import PikaTeleopState
 from pika_teleop_interfaces.srv import SetTeleopEnabled
 from realman_msgs.action import ExecuteMotion
 from realman_recording_msgs.srv import ManageRecording
@@ -66,6 +67,15 @@ class PikaSessionManager(Node):
             'reset_blend_radius_percent'
         )
         self.reset_timeout_sec = self._positive_parameter('reset_timeout_sec')
+        self.reset_on_user_stop = bool(
+            self.get_parameter('reset_on_user_stop').value
+        )
+        self.reset_dispatch_delay_ns = int(
+            self._nonnegative_parameter('reset_dispatch_delay_ms') * 1.0e6
+        )
+        self.stop_state_timeout_ns = int(
+            self._positive_parameter('stop_state_timeout_ms') * 1.0e6
+        )
         self.reset_joints = {
             side: self._array_parameter(
                 f'{side}_reset_joint_degrees', 6
@@ -111,6 +121,22 @@ class PikaSessionManager(Node):
             )
             for side in self.SIDES
         }
+        state_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._teleop_state_subscriptions = [
+            self.create_subscription(
+                PikaTeleopState,
+                f'/pika_teleop/{side}/state',
+                lambda message, side=side: self._teleop_state_callback(side, message),
+                state_qos,
+                callback_group=self._callback_group,
+            )
+            for side in self.SIDES
+        ]
         self._left_service = self.create_service(
             SetTeleopEnabled,
             '/pika_teleop/left/set_enabled',
@@ -131,6 +157,13 @@ class PikaSessionManager(Node):
         self._prepare_retry_at_ns = 0
         self._last_prepare_failure = None
         self._stop_future = None
+        self._recorder_stop_status = 'NOT_REQUESTED'
+        self._recorder_stop_detail = ''
+        self._recorder_stop_success_ns = 0
+        self._stop_started_ns = 0
+        self._stop_ros_stamp_ns = 0
+        self._disabled_seen = {side: False for side in self.SIDES}
+        self._both_disabled_ns = 0
         self._abnormal_stop = False
         self._stop_reason = ''
         self._start_cancel_reason = ''
@@ -138,6 +171,7 @@ class PikaSessionManager(Node):
         self._reset_goal_futures: Dict[str, object] = {}
         self._reset_result_futures: Dict[str, object] = {}
         self._reset_failures: Dict[str, str] = {}
+        self._reset_deadline_ns = 0
         self._workflow_timer = self.create_timer(
             0.02,
             self._workflow_tick,
@@ -166,6 +200,9 @@ class PikaSessionManager(Node):
         self.declare_parameter('reset_velocity_percent', 10)
         self.declare_parameter('reset_blend_radius_percent', 0)
         self.declare_parameter('reset_timeout_sec', 120.0)
+        self.declare_parameter('reset_on_user_stop', True)
+        self.declare_parameter('reset_dispatch_delay_ms', 4000.0)
+        self.declare_parameter('stop_state_timeout_ms', 6000.0)
 
     def _string_parameter(self, name: str) -> str:
         value = str(self.get_parameter(name).value).strip()
@@ -177,6 +214,12 @@ class PikaSessionManager(Node):
         value = float(self.get_parameter(name).value)
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f'{name} must be finite and positive')
+        return value
+
+    def _nonnegative_parameter(self, name: str) -> float:
+        value = float(self.get_parameter(name).value)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'{name} must be finite and non-negative')
         return value
 
     def _percentage_parameter(self, name: str) -> int:
@@ -205,6 +248,28 @@ class PikaSessionManager(Node):
                 self.get_logger().info(f'SESSION {self.state} -> {state}')
             self.state = state
             self._publish_state()
+
+    def _teleop_state_callback(self, side: str, message: PikaTeleopState) -> None:
+        with self._lock:
+            if self.state != self.STOPPING or not self._requires_reset():
+                return
+            stamp = message.header.stamp
+            stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+            if stamp_ns <= self._stop_ros_stamp_ns or message.enabled or message.valid:
+                return
+            if not self._disabled_seen[side]:
+                self._disabled_seen[side] = True
+                self.get_logger().info(f'{side.upper()} disabled State confirmed after STOP')
+            if all(self._disabled_seen.values()) and not self._both_disabled_ns:
+                self._both_disabled_ns = time.monotonic_ns()
+                self.get_logger().info('Both teleop sides disabled; reset handoff started')
+
+    def _requires_reset(self) -> bool:
+        return (
+            self.reset_on_user_stop
+            and not self._abnormal_stop
+            and not self._skip_reset_after_stop
+        )
 
     @staticmethod
     def _recording_request(command: int) -> ManageRecording.Request:
@@ -341,10 +406,7 @@ class PikaSessionManager(Node):
             skip_reset = reason == 'START_CANCEL_STOP' and not any(
                 self.active[name] for name in self.SIDES if name != side
             )
-            if not self._begin_stop(side, reason, skip_reset=skip_reset):
-                response.success = False
-                response.message = 'recording STOP unavailable; session FAILED'
-                return response
+            self._begin_stop(side, reason, skip_reset=skip_reset)
         response.success = True
         response.message = 'episode stop accepted; recording stop/reset in progress'
         self.get_logger().warning(
@@ -352,20 +414,35 @@ class PikaSessionManager(Node):
         )
         return response
 
-    def _begin_stop(self, side: str, reason: str, skip_reset: bool) -> bool:
+    def _begin_stop(self, side: str, reason: str, skip_reset: bool) -> None:
         """Called under the episode lock, including by a late START result."""
         self.active = {name: False for name in self.SIDES}
         self._abnormal_stop = reason in self.ABNORMAL_REASONS
         self._skip_reset_after_stop = skip_reset
         self._stop_reason = reason
+        self._stop_started_ns = time.monotonic_ns()
+        self._stop_ros_stamp_ns = self.get_clock().now().nanoseconds
+        self._disabled_seen = {name: False for name in self.SIDES}
+        self._both_disabled_ns = 0
+        self._stop_future = None
+        self._recorder_stop_status = 'PENDING'
+        self._recorder_stop_detail = ''
+        self._recorder_stop_success_ns = 0
         self._set_state(self.STOPPING)
         self.force_stop_publisher.publish(Empty())
         if not self.recording_client.service_is_ready():
-            self._set_state(self.FAILED)
-            return False
+            self._recorder_stop_failed('service unavailable')
+            return
         request = self._recording_request(ManageRecording.Request.STOP)
-        self._stop_future = self.recording_client.call_async(request)
-        return True
+        try:
+            self._stop_future = self.recording_client.call_async(request)
+        except Exception as exc:
+            self._recorder_stop_failed(f'call failed: {exc}')
+
+    def _recorder_stop_failed(self, detail: str) -> None:
+        self._recorder_stop_status = 'FAILED'
+        self._recorder_stop_detail = detail
+        self.get_logger().error(f'Recording STOP failed: {detail}')
 
     def _begin_prepare(self) -> None:
         self._prepare_future = None
@@ -414,32 +491,79 @@ class PikaSessionManager(Node):
             self.prepare_retry_sec * 1.0e9
         )
 
-    def _poll_stop(self) -> None:
+    def _poll_recorder_stop(self, now_ns: int) -> None:
         if self._stop_future is None or not self._stop_future.done():
             return
         try:
             result = self._stop_future.result()
         except Exception as exc:
             result = None
-            self.get_logger().error(f'Recording STOP call failed: {exc}')
+            detail = f'call exception: {exc}'
+        else:
+            detail = 'no response' if result is None else getattr(result, 'message', '')
         self._stop_future = None
-        if result is None or not result.success:
-            message = 'no response' if result is None else result.message
-            self.get_logger().error(f'Recording STOP failed: {message}')
-            self._set_state(self.FAILED)
+        if self._recorder_stop_status == 'UNCONFIRMED':
+            self.get_logger().warning(
+                'Recording STOP late reply after unconfirmed reset path: '
+                f'success={bool(result and result.success)}, detail={detail}; '
+                'manual recording inspection still required'
+            )
             return
+        if result is None or not result.success:
+            self._recorder_stop_failed(detail)
+            return
+        self._recorder_stop_status = 'SUCCEEDED'
+        self._recorder_stop_success_ns = now_ns
         self.get_logger().info('Recording STOP succeeded')
+
+    def _poll_stop(self, now_ns: int) -> None:
+        if self._requires_reset():
+            if not self._both_disabled_ns:
+                if now_ns - self._stop_started_ns >= self.stop_state_timeout_ns:
+                    missing = [side for side in self.SIDES if not self._disabled_seen[side]]
+                    self.get_logger().error(
+                        f'STOP disabled State not confirmed for {missing}; '
+                        'automatic MoveJ forbidden'
+                    )
+                    self._set_state(self.FAILED)
+                return
+            handoff_at = self._both_disabled_ns + self.reset_dispatch_delay_ns
+        else:
+            handoff_at = self._stop_started_ns + self.reset_dispatch_delay_ns
+
+        if self._recorder_stop_status == 'PENDING' and now_ns >= handoff_at:
+            self._recorder_stop_status = 'UNCONFIRMED'
+            self._recorder_stop_detail = 'no reply before handoff deadline'
+            self.get_logger().error(
+                'RECORDER_STOP_UNCONFIRMED: no reply before handoff deadline'
+            )
+
+        if self._recorder_stop_status == 'PENDING':
+            return
         if self._abnormal_stop:
             self.get_logger().error(
                 f'Abnormal {self._stop_reason}: automatic MoveJ is forbidden'
             )
             self._set_state(self.FAILED)
             return
-        if self._skip_reset_after_stop:
-            self.get_logger().info('Cancelled START: skipping automatic MoveJ')
-            self._begin_prepare()
+        if not self._requires_reset():
+            if self._recorder_stop_status == 'SUCCEEDED':
+                self.get_logger().info('Automatic MoveJ disabled/skipped; preparing next episode')
+                self._begin_prepare()
+            else:
+                self.get_logger().error(
+                    f'RECORDER_STOP_{self._recorder_stop_status}: '
+                    f'{self._recorder_stop_detail}; manual recovery required'
+                )
+                self._set_state(self.FAILED)
             return
-        self._begin_reset()
+        if self._recorder_stop_status == 'SUCCEEDED':
+            handoff_at = max(
+                self._both_disabled_ns, self._recorder_stop_success_ns
+            ) + self.reset_dispatch_delay_ns
+        if now_ns >= handoff_at:
+            self.get_logger().info('STOP handoff elapsed; dispatching LEFT and RIGHT MoveJ')
+            self._begin_reset()
 
     def _reset_goal(self, side: str) -> ExecuteMotion.Goal:
         goal = ExecuteMotion.Goal()
@@ -457,6 +581,9 @@ class PikaSessionManager(Node):
 
     def _begin_reset(self) -> None:
         self._set_state(self.RESETTING)
+        self._reset_deadline_ns = time.monotonic_ns() + int(
+            (self.reset_timeout_sec + 5.0) * 1.0e9
+        )
         self._reset_goal_futures = {}
         self._reset_result_futures = {}
         self._reset_failures = {}
@@ -465,11 +592,20 @@ class PikaSessionManager(Node):
             if not client.server_is_ready():
                 self._reset_failures[side] = 'Action server unavailable'
                 continue
-            self._reset_goal_futures[side] = client.send_goal_async(
-                self._reset_goal(side)
-            )
+            try:
+                self._reset_goal_futures[side] = client.send_goal_async(
+                    self._reset_goal(side)
+                )
+            except Exception as exc:
+                self._reset_failures[side] = f'goal send failed: {exc}'
 
-    def _poll_reset(self) -> None:
+    def _poll_reset(self, now_ns: int) -> None:
+        if now_ns >= self._reset_deadline_ns:
+            for side in self.SIDES:
+                if side not in self._reset_failures:
+                    result_future = self._reset_result_futures.get(side)
+                    if result_future is None or not result_future.done():
+                        self._reset_failures[side] = 'Action result timed out'
         for side in self.SIDES:
             if side in self._reset_failures:
                 continue
@@ -528,16 +664,25 @@ class PikaSessionManager(Node):
             self._set_state(self.FAILED)
             return
         self.get_logger().info('LEFT and RIGHT reset Actions succeeded')
-        self._begin_prepare()
+        if self._recorder_stop_status == 'SUCCEEDED':
+            self._begin_prepare()
+        else:
+            self.get_logger().error(
+                f'RECORDER_STOP_{self._recorder_stop_status}: '
+                f'{self._recorder_stop_detail}; reset succeeded but manual recovery required'
+            )
+            self._set_state(self.FAILED)
 
     def _workflow_tick(self) -> None:
         now_ns = time.monotonic_ns()
-        if self.state == self.PREPARING:
-            self._poll_prepare(now_ns)
-        elif self.state == self.STOPPING:
-            self._poll_stop()
-        elif self.state == self.RESETTING:
-            self._poll_reset()
+        with self._lock:
+            self._poll_recorder_stop(now_ns)
+            if self.state == self.PREPARING:
+                self._poll_prepare(now_ns)
+            elif self.state == self.STOPPING:
+                self._poll_stop(now_ns)
+            elif self.state == self.RESETTING:
+                self._poll_reset(now_ns)
 
 
 def main(args=None) -> None:

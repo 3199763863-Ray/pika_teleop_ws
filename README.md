@@ -68,7 +68,7 @@ Mapper 对已启用且有效的侧以 **20 Hz** 发布 `/pika/l|r/cartesian_pose
 
 两份 launch 在本机默认 `start_foot_pedal:=true`。安装 `python3-evdev` 并确认用户可读脚踏板 `/dev/input/by-id/usb-0483_5750-if01-event-kbd` 后，原命令 `ros2 launch pika_teleop_bringup pika_bag.launch.py start_pika_official:=true pika_ros_ws:=/home/user2/pika_ros` 会同时启动官方节点和脚踏节点；正式模式可用 `pika_teleop.launch.py`。若要禁用脚踏，传 `start_foot_pedal:=false`。脚踏模式下夹爪手势判定停用但夹爪数据照常下发；踩一次先左后右启动，再踩一次停止，松脚不停止。`/foot_pedal/pressed` 是短暂物理按键状态，`/foot_pedal/enabled` 是逻辑启停请求状态。设备路径、键码、消抖和重复触发保护可由 launch 参数覆盖，详见 [脚踏板说明](src/pika_foot_pedal/README.md)。脚踏板不是硬件急停，归位完成需人工确认。
 
-正式模式主流程：`PREPARING → READY → STARTING → RECORDING → STOPPING → RESETTING → PREPARING`。首次 START 要等待外部 Recorder 成功返回；另一侧可加入同一 recording session。任一侧正常 USER_STOP 会结束整个 episode：先停止两侧，再请求 Recorder STOP；成功后通过外部 `/l/execute_motion`、`/r/execute_motion` 并行 MoveJ 回零。`STALE_STOP` 或 `POSE_JUMP_STOP` 会停止录制并进入 `FAILED`，**不会自动 MoveJ**。录制或回零失败也进入 `FAILED`，需人工排查并重启 Session Manager。`middle_reset_joint_degrees` 仅校验保存，当前不发送中臂 Action。
+正式模式主流程：`PREPARING → READY → STARTING → RECORDING → STOPPING → RESETTING → PREPARING`。首次 START 要等待外部 Recorder 成功返回；另一侧可加入同一 recording session。任一侧正常 USER_STOP 会立即停止两侧、关闭 START gate、请求 Recorder STOP；确认本轮双侧新 disabled State 后按正式 YAML 的 `reset_dispatch_delay_ms=4000` 延迟，通过外部 `/l/execute_motion`、`/r/execute_motion` 并行 MoveJ。Recorder STOP 成功时延迟从双侧确认和成功回复的较晚时刻起算；Recorder 无服务、失败或无回复时仍允许在双侧确认后延迟归位，但即使 MoveJ 成功也进入 `FAILED`，**不会自动开始下一轮录制**。没有双侧新 State 则不归位。`STALE_STOP` 或 `POSE_JUMP_STOP` 不自动 MoveJ。Action 失败需人工排查。`middle_reset_joint_degrees` 仅校验保存，当前不发送中臂 Action；细节见 [Session Manager](src/pika_session_manager/README.md)。
 
 Bag 模式的 `reset_on_user_stop=true` 只处理**已确认 ACTIVE 的该侧**正常 `USER_STOP`：Virtual Receiver 接受 STOP 后等待该请求之后的新 disabled State，再按 Bag YAML 的 `reset_dispatch_delay_ms`（当前试验值 4000 ms）延迟，向该侧 `/l/execute_motion` 或 `/r/execute_motion` 异步发送预设六关节 `MOVEJ` Goal。`STALE_STOP`、`POSE_JUMP_STOP`、watchdog 超时、未真正启动、重复 STOP 均不会触发复位；缺失 Action Server 只告警，不影响 STOP。**Goal 发出或被接受都不代表实际回到预设关节角**；节点不等待动作结果。必须现场确认对应机械臂已停止运动后，才能再次 START。可在 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam) 将 `reset_on_user_stop` 设为 `false` 关闭此功能。
 
@@ -98,21 +98,23 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py
 
 ## 当前参数速览
 
-表中“默认”来自代码，“正式/Bag”来自已提交 YAML；未写入 YAML 时按默认生效。部署机若有未提交配置，以该机运行时参数为准，差异见 [LOG](LOG.md)。
+表中“默认”来自代码，“正式/Bag”来自本工作副本 YAML；未写入 YAML 时按默认生效。部署机若有未提交配置，以该机运行时参数为准，差异见 [LOG](LOG.md)。
 
 | 项目 | 代码默认 | 正式 | Bag |
 |---|---:|---:|---:|
 | Bridge `state_rate_hz` | 100 Hz | **20 Hz** | **20 Hz** |
-| Bridge `stale_stop_ms` | 50 ms | **50 ms**（YAML 未写） | **2000 ms** |
+| Bridge `stale_stop_ms` | 50 ms | **1000 ms** | **2000 ms** |
 | Bridge `velocity_max_dt_ms` | 50 ms | 150 ms | 150 ms |
 | Mapper `command_rate_hz` | 100 Hz | **20 Hz** | **20 Hz** |
-| Mapper `state_timeout_ms` | 100 ms | 200 ms | 200 ms |
+| Mapper `state_timeout_ms` | 100 ms | 2000 ms（保留部署机现有覆盖值） | 200 ms |
 | Mapper `gripper_publish_rate_hz` | 4 Hz | 4 Hz（YAML 未写） | 4 Hz（YAML 未写） |
 | Mapper 求导窗口 | 2 帧 | 5 帧 | 5 帧 |
 | Mapper 卡尔曼 / 低通 | 关 / 10 Hz | 开 / 10 Hz | 开 / 10 Hz |
 | 线速度 / 角速度死区 | 0.02 m/s / 0.03 rad/s | **0.005 m/s / 0.012 rad/s** | **0.005 m/s / 0.012 rad/s** |
 | 夹爪全开原始值 | 0.1 | 0.0967 | 0.0967 |
 | Virtual Receiver `state_timeout_ms` | 100 ms | 不启动 | **2000 ms** |
+| Session Manager `reset_on_user_stop` / `reset_dispatch_delay_ms` | true / 4000 ms | true / 4000 ms | 不启动 Session Manager |
+| Session Manager `stop_state_timeout_ms` | 6000 ms | 6000 ms | 不启动 Session Manager |
 
 PoseJump 使用代码默认 `0.08 m`、`45°`。正式模式 `require_realman_start_tf=true`，Bag 为 `false`。Bag 复位关节角和 Action 参数已单独复制进 Bag YAML，运行时不读取正式 YAML。配置文件为 [正式 YAML](src/pika_teleop_bringup/config/ros/pika_config.yam) 与 [Bag YAML](src/pika_teleop_bringup/config/ros/pika_bag_config.yam)；参数含义见 [Bridge](src/pika_teleop_bridge/README.md)、[Mapper](src/pika_realman_mapper/README.md) 和 [Bringup](src/pika_teleop_bringup/README.md)。修改配置后重启 launch；非软链接构建还需重建安装目录。
 

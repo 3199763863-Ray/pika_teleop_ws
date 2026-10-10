@@ -1,5 +1,15 @@
 # 项目维护记录
 
+## 2026-10-10：正式模式超时与 Recorder 解耦复位
+
+基线为干净的 GitHub `main` `2b882ab37dd46354cf6aea12ebe12b308b8be414`，另建 `outputs/formal_reset_repo`，没有覆盖上一脚踏任务工作副本。部署机同为该提交，但正式 YAML 已有未提交的 Mapper `state_timeout_ms: 2000.0`（相对提交为 200.0）；本次保留此现场值并纳入本地工作副本，未改 Mapper 源码、TF、坐标映射、脚踏及 Bag YAML/Launch/Virtual Receiver。
+
+- 正式 YAML：Bridge 显式设 `stale_stop_ms: 1000.0`；Session Manager 新增 `reset_on_user_stop: true`、`reset_dispatch_delay_ms: 4000.0`、`stop_state_timeout_ms: 6000.0`。后者用于新双侧 disabled State 缺失时保守失败。
+- Session Manager：正常 STOP 立刻关闭双侧和 START gate，异步请求 Recorder STOP；只在本轮新双侧 disabled State 到达后计时派发左右各一次 MoveJ。Recorder 成功时从其回复和双侧确认的较晚时刻起等 4 秒；失败、无服务、异常或 4 秒内无回复时仍可从双侧确认起等 4 秒后归位，但结果保留 `RECORDER_STOP_FAILED/UNCONFIRMED`，即使 Action 成功也留在 FAILED。迟到回复仅记录，不再派发或自动 READY。State 缺失、异常停止、未真正启动的取消均不触发 MoveJ。
+- 原有 Action Goal/Result 等待保留；新增发送异常和无结果超时处理，不在 busy 时自动重试。`reset_on_user_stop=false` 时仍请求 Recorder STOP，成功直接 PREPARING，失败或超时 FAILED。更新根、Session Manager、Bringup 与 Bridge README；新增正式模式假 Recorder/State/Action 测试，适配既有 START 取消测试。
+
+部署机 `/home/user2/pika_teleop_ws` 已同步并核对文件哈希；`colcon build --symlink-install --packages-up-to pika_teleop_bringup` 的 9 个包成功。隔离 `ROS_DOMAIN_ID=211` 顺序运行 Session Manager 12 项、Bag Virtual Receiver 11 项、脚踏 13 项测试均通过；Bridge 包当前没有测试，`colcon test-result --verbose` 为 0 错误/失败。安装后的 YAML 解析值：正式 Bridge 1000 ms、正式 Mapper 保留 2000 ms、正式复位开启/延迟 4000 ms/State 确认 6000 ms；Bag Bridge 2000 ms、Bag Mapper 200 ms。仓库原有混合 CRLF，`git -c core.whitespace=cr-at-eol diff --check` 通过。未启动正式 launch、未连接真实 Recorder 或触发 RealMan MoveJ；需由现场在下次启动后低风险联调。4000 ms 只作为行为树控制权交接的试验缓冲，不能证明 `arm is busy` 已消除。Git 未 add/commit/push。
+
 ## 2026-10-09：脚踏板改为踩下切换启停
 
 现场原始 evdev 事件显示，用户持续踩住约 3 秒时，设备仍只给出约 40 ms 的 KEY_F3 按下/释放脉冲；因此原“按住运行、释放停止”会立即中断。现改为每次有效踩下切换：第一次按先左后右启动，第二次按停止；物理释放不影响启停。同批读取到按下和释放时按事件时间戳处理，以免系统调度延迟吞掉短脉冲。150 ms 重复触发保护可通过 `foot_pedal_retrigger_guard_ms` 调整；保留 30 ms 输入消抖、启动超时、迟到 START 补偿和设备失联保护。`/foot_pedal/pressed` 保留物理状态，新增 `/foot_pedal/enabled` 显示逻辑启停请求（不是双臂 ACTIVE 证明）。

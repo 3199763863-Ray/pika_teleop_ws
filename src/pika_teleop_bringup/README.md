@@ -13,6 +13,8 @@
 
 Bag YAML 默认 `reset_on_user_stop: true`。该模式只有已确认 ACTIVE 的某一侧收到三击或 `scripts/pika_stop.sh <side>` 形成的 `USER_STOP` 时，才等待新 disabled State 和可配置的交接延迟（`reset_dispatch_delay_ms` 当前试验值 4000 ms），再向 `/l/execute_motion` 或 `/r/execute_motion` 异步下发**该侧**预设六关节 MoveJ。关节角、Action 名、速度和交接时长都直接写在 [`pika_bag_config.yam`](config/ros/pika_bag_config.yam)，运行时不读取正式配置。需要维持旧 Bag 行为时，把 `reset_on_user_stop` 改为 `false` 并重启 Bag launch。缺少 Action Server 时 STOP 仍成功，只有复位被跳过并告警；Goal 发出/接受不代表运动完成，必须现场确认 MoveJ 已结束后才再次 START。
 
+正式 YAML 的 Bridge `stale_stop_ms=1000`；Session Manager `reset_on_user_stop=true`、`reset_dispatch_delay_ms=4000`、`stop_state_timeout_ms=6000`。正常 USER_STOP 会先关双侧遥操并请求 Recorder STOP；只有本轮双侧新 disabled State 都到达，才计时派发**双臂** MoveJ。Recorder STOP 无回复或失败不会阻塞归位，但结果仍标异常，归位后留在 FAILED，须人工核查录制；Action Goal 与 Result 都会等待。设 `reset_on_user_stop=false` 可只停止录制、不派发 MoveJ。Bag 的单侧 fire-and-forget 流程没有改动。
+
 ## 构建与启动
 
 脚踏板：两份 launch 在本机默认 `start_foot_pedal:=true`，并可覆盖 `foot_pedal_device`、`foot_pedal_key_code`、`foot_pedal_debounce_ms`、`foot_pedal_retrigger_guard_ms`。先安装 `python3-evdev` 并确保当前用户可读对应 `/dev/input/by-id/...`。原 Bag 命令 `ros2 launch pika_teleop_bringup pika_bag.launch.py start_pika_official:=true pika_ros_ws:=/home/user2/pika_ros` 会同时拉起脚踏节点；正式模式将 launch 文件换为 `pika_teleop.launch.py`。踩一次先左后右启动，再踩一次停止；松脚不停止。用 `start_foot_pedal:=false` 临时关闭脚踏并启用夹爪手势。启动时已踩住必须先松开。详见 [脚踏板说明](../pika_foot_pedal/README.md)。
@@ -53,7 +55,7 @@ Bag 模式将命令中的 `pika_teleop.launch.py` 换成 `pika_bag.launch.py`。
 
 ## 参数边界
 
-正式 YAML：Bridge State 20 Hz、`stale_stop_ms` 未写入而使用代码默认 **50 ms**；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=true`。Bag YAML：Bridge State 20 Hz、`stale_stop_ms=2000 ms`；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=false`；Virtual Receiver watchdog 已提交值为 **2000 ms**。完整对照见 [根 README](../../README.md) 与各节点 README。
+正式 YAML：Bridge State 20 Hz、`stale_stop_ms=1000 ms`；Mapper 命令 20 Hz、State watchdog 2000 ms（保留部署机现有未提交覆盖值）、`require_realman_start_tf=true`。Bag YAML：Bridge State 20 Hz、`stale_stop_ms=2000 ms`；Mapper 命令 20 Hz、State watchdog 200 ms、`require_realman_start_tf=false`；Virtual Receiver watchdog 为 **2000 ms**。完整对照见 [根 README](../../README.md) 与各节点 README。
 
 正式模式 Pose `frame_id` 是 `l/base_link`、`r/base_link`，Bag Pose 是 `l/work/pikabase`、`r/work/pikabase`；两模式速度消息均用 `l/work/pikabase`、`r/work/pikabase`。`l/link_6`、`r/link_6` 是正式模式启动时查询的 TCP TF。外部接收器需要按自己的 TF 约定解释这些名称，不能从字符串相似推断等价。
 
