@@ -49,6 +49,8 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py \
 
 Bag 模式将命令中的 `pika_teleop.launch.py` 换成 `pika_bag.launch.py`。`start_pika_official` 默认 `false`；官方节点已运行时不要再次拉起。默认工作区使用当前用户 `~/pika_ros`，串口默认使用上述别名，可按机器实际路径覆盖。部署机 `user2@192.168.31.97` 的别名按 USB 物理口绑定，换口后先确认左右映射。
 
+两份 launch 默认 `dds_wired_only:=true`。它们以 `dds_wired_peer:=192.168.30.200` 的路由自动识别本机物理有线网卡地址，生成 Fast DDS UDP 源地址白名单，并保留 SHM 供本机 ROS 节点通信；被本 launch 拉起的官方定位节点也继承此配置。由于白名单并不限制路由选择，默认再以 `dds_remote_unicast_locators:=1` 限制每个远端参与者保留的单播地址数，减少 DDS 发现流量向 RealMan 多个地址重复发送。现场跨机收包已验证；若对端拓扑改变后通信异常，可传入 `dds_remote_unicast_locators:=4` 恢复原地址数。RealMan 有线地址改变时传入 `dds_wired_peer:=新地址`。没有有线链路的离线 Bag 演示可显式传 `dds_wired_only:=false`；否则路由未指向物理有线网卡时启动失败。所选接口、地址、地址数量及 XML 路径写入本次 `run_info.txt` 和 `launch.log`。外部单独启动的官方节点不受此配置影响。
+
 当选择由本 launch 启动官方 Pika 时，[`official_stack_supervisor.py`](pika_teleop_bringup/official_stack_supervisor.py) 在独立进程组内运行官方 `sensor_tools open_multi_sensor_with_teleop.launch.py`。Ctrl+C 后依次请求 SIGINT，超时再升级为 SIGTERM/SIGKILL，以清理它拉起的定位器、串口和 RViz 等子进程。supervisor 负责进程退出清理，不能修复位姿卡顿、Wi-Fi 或传感器断流。独立于本 launch 启动的官方进程需由其原启动终端停止。
 
 两份 launch 均尝试将 `~/.ros/log/pika_teleop_latest` 链向本次运行的 `~/.ros/log/<时间戳>-...` 目录，并写入 `run_info.txt`（launch 文件、时间、命令参数）。节点输出同时进入终端和 ROS 日志。符号链接或文件写入失败被忽略，应以 launch 实际报告的日志目录为准。

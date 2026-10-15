@@ -96,6 +96,8 @@ ros2 launch pika_teleop_bringup pika_teleop.launch.py
 
 需要由本 launch 启动官方 Pika 时，在所选命令后追加 `start_pika_official:=true`。官方工作区或设备别名不同，可同时追加 `pika_ros_ws:=/实际路径`、`left_serial_port:=/设备路径`、`right_serial_port:=/设备路径`。停止时在启动终端按 Ctrl+C；由该 launch 启动的官方进程交给 supervisor 清理。启动前需确保本模式的外部依赖已就绪，首次真机动作应低速、空载、保持急停可用。
 
+两份 launch 默认启用 `dds_wired_only:=true`：按 `dds_wired_peer:=192.168.30.200` 查询路由，自动取得本机物理有线网卡和 IPv4 地址，为本 launch 拉起的节点（包括 `start_pika_official:=true` 时的官方节点）配置 Fast DDS UDP 源地址白名单，同时保留本机共享内存通信。**源地址白名单本身不保证数据包只从有线网卡出去。**为减少同一 RealMan 参与者通过多个地址重复收到 DDS 发现包，默认将 `dds_remote_unicast_locators:=1`；本机实测启动 WiFi 峰值明显下降，RealMan 仍收到 Pika 夹爪数据。若对端网络结构变化导致通信失败，可临时设为 `4` 恢复原来的地址数量并排查。RealMan 有线地址变化时覆盖 `dds_wired_peer:=新地址`；无有线网卡的离线 Bag 演示可显式设 `dds_wired_only:=false`。有线网卡不可用时启动会报错。配置文件和所选网卡记录在本次 `~/.ros/log/.../run_info.txt` 与启动日志中。已经在其他终端独立启动的官方 Pika 节点不受这两份 launch 的网络配置约束。
+
 ## 当前参数速览
 
 表中“默认”来自代码，“正式/Bag”来自本工作副本 YAML；未写入 YAML 时按默认生效。部署机若有未提交配置，以该机运行时参数为准，差异见 [LOG](LOG.md)。

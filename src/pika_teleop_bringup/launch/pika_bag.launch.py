@@ -17,6 +17,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from pika_teleop_bringup.wired_dds import configure_wired_dds
 
 
 def _local_python_path(packages):
@@ -101,6 +102,19 @@ def generate_launch_description() -> LaunchDescription:
             default_value=os.path.join(os.path.expanduser('~'), 'pika_ros'),
             description='Path to the official Pika ROS workspace.',
         ),
+        DeclareLaunchArgument(
+            'dds_wired_only', default_value='true',
+            description='Apply the wired-source Fast DDS profile.',
+        ),
+        DeclareLaunchArgument(
+            'dds_wired_peer', default_value='192.168.30.200',
+            description='RealMan wired IPv4 address used to select the local NIC.',
+        ),
+        DeclareLaunchArgument(
+            'dds_remote_unicast_locators', default_value='1',
+            description='Remote DDS unicast addresses retained per participant (1-4).',
+        ),
+        OpaqueFunction(function=configure_wired_dds),
         DeclareLaunchArgument(
             'left_serial_port', default_value='/dev/pika_gripper_left'
         ),

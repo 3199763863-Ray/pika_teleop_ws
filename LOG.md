@@ -1,5 +1,22 @@
 # 项目维护记录
 
+## 2026-10-15：降低启动时 DDS 发现流量
+
+- 在 `ROS_DOMAIN_ID=65` 下短暂启动 Bag、官方定位器、左右串口和脚踏节点，未触发 START 或机器人 Action。逐秒网卡计数复现启动后约 5 秒的发送峰值：有线约 6–10 MB/s、WiFi 约 7–24 MB/s，随后均降至每秒几百 KB。抓包只截取包头；约 30 万个有线包、61 万个 WiFi 包为 52 字节 DDS `HEARTBEAT`，属于参与者发现/匹配流量，不是图像数据。官方位姿和夹爪话题在待机时只有本机 Bridge 订阅，故降低其 100 Hz 采样不能解决该峰值。
+- 复核发现，先前 UDP `interfaceWhiteList` 限制的是本地源地址，不能阻止源地址为 `192.168.30.143` 的包经 WiFi 路由发往 RealMan WiFi/WireGuard 地址；旧节标题和“仅使用有线”表述并不准确。
+- Fast DDS 2.6 的临时 XML 将每个远端参与者的 `max_unicast_locators` 从默认 4 设为 1。相同启动场景下，WiFi 前几秒约 0.5 MB/s，有线仍约 10 MB/s；RealMan 只读订阅 `/gripper_l/joint_state` 实际收到了 Pika 官方数据。`/pika_pose_l` 当时无样本，因此不能据此断言定位数据路径和真机控制已经完整验证。
+- 把该参数作为 Bag/正式 launch 的 `dds_remote_unicast_locators`，默认 1，可设 4 回到原地址数量。官方源码、Topic 频率、控制逻辑和 RealMan 工控机均未改。此配置的目的在于减少重复 DDS 包；如果 RealMan 网络拓扑变动，必须重新核对跨机通信。
+- 同步到 `user2@192.168.31.97:/home/user2/pika_teleop_ws` 后，六个文件的 SHA-256 与本地一致，`colcon build --symlink-install --packages-select pika_teleop_bringup` 通过，Bag/正式 launch 的 `--show-args` 均显示默认值 1。再用已安装的新 Bag launch 启动官方节点实测，生成的 XML 确为 `max_unicast_locators=1`；启动阶段 WiFi 每秒约 0.54–0.56 MB，有线仍约 10 MB/s。测试后清理了 launch 与官方子进程。未执行 Git add/commit/push，也未进行真机 START/速度控制测试。
+- 随后在相同 `ROS_DOMAIN_ID=65` 的 Bag+官方节点待机场景逐秒采样约 1 分钟：启动前 5 秒有线最高 10.24 MB/s、WiFi 最高 0.60 MB/s；第 11 秒后连续 55 个样本，有线平均 107 KB/s、最高 141 KB/s，WiFi 平均 33 KB/s、最高 52 KB/s（均为整机网卡发送计数，含后台流量）。无 USER_START、归位 Goal 或测试进程残留。此测量支持待机带宽稳定下降，不能替代真实遥操、正式模式或长期运行验证。
+
+## 2026-10-14：Pika DDS 有线源地址白名单（后续发现仍有重复发送）
+
+- 基线为部署机干净的 `main` `d6173ea100a64f0f1c1465f6b5be9c47daa817f8`，本地隔离工作副本 `outputs/wired_dds_repo`。Bag 空闲运行时曾测到 Pika WiFi 发送约 4 MB/s；包头统计显示官方 `pika_double_locator_node` 同时向 RealMan 的有线 `192.168.30.200`、WiFi `192.168.31.224`、Tailscale `100.97.41.73` 和 WireGuard `10.200.0.13` 地址发送 DDS 数据，后者从 Pika 部署机不可达。RealMan 工控机仅做只读检查。
+- Bag 与正式 launch 新增默认开启的 `dds_wired_only` 和可覆盖的 `dds_wired_peer`（当前 `192.168.30.200`）。启动时根据 peer 路由读取本机物理有线网卡 IPv4，生成本次日志目录下的 Fast DDS XML；自定义 UDPv4 白名单只列该地址，另保留 SHM。本 launch 启动的自有节点及官方子进程继承 XML。不可用时直接报错；无有线环境可显式关闭。官方 Pika 代码、RealMan 工控机、Topic 频率及控制逻辑均未改。
+- 启动时的网卡、IPv4、目标和 XML 路径会同时进入 `launch.log` 与 `run_info.txt`。当前用户暂不方便重启 Pika，本次不重启运行节点；**修改后的网络带宽仍待下次由用户启动后实测**，不能将修改前的 4 MB/s 当作修改后结果。
+- 静态验证：部署机路由识别为 `enp131s0 / 192.168.30.143`，传入 WiFi peer 时明确拒绝；XML 解析后 UDP 白名单只有该有线地址，并保留 SHM。`colcon build --symlink-install --packages-select pika_teleop_bringup` 成功；安装模块可导入，Bag/正式 launch 的 `--show-args` 都显示新增参数；`git diff --check` 与 Python 语法检查通过。以上均未启动 Pika 或机械臂，未验证真实 DDS 发布后的带宽与通信连通性。
+- 未执行 Git add/commit/push。下次由用户自行启动后，应核对官方定位进程继承的 `FASTRTPS_DEFAULT_PROFILES_FILE`，再分别采样有线/WiFi/Tailscale 的带宽及 ROS Topic、Service、Action 连通性。
+
 ## 2026-10-10：正式模式超时与 Recorder 解耦复位
 
 基线为干净的 GitHub `main` `2b882ab37dd46354cf6aea12ebe12b308b8be414`，另建 `outputs/formal_reset_repo`，没有覆盖上一脚踏任务工作副本。部署机同为该提交，但正式 YAML 已有未提交的 Mapper `state_timeout_ms: 2000.0`（相对提交为 200.0）；本次保留此现场值并纳入本地工作副本，未改 Mapper 源码、TF、坐标映射、脚踏及 Bag YAML/Launch/Virtual Receiver。
