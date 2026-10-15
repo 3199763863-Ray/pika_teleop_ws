@@ -91,6 +91,13 @@ def make_manager(*, recorder=None, reset_enabled=True, reason='USER_STOP', actio
     manager.stop_state_timeout_ns = 6 * SECOND
     manager.recording_client = recorder or Recorder()
     manager.action_clients = actions or {'left': Action(), 'right': Action()}
+    manager.gripper_opens = {'left': [], 'right': []}
+    manager._gripper_reset_publishers = {
+        side: SimpleNamespace(
+            publish=lambda msg, side=side: manager.gripper_opens[side].append(msg.data)
+        )
+        for side in manager.SIDES
+    }
     manager._reset_goal = lambda side: side
     manager._reset_goal_futures = {}
     manager._reset_result_futures = {}
@@ -170,10 +177,13 @@ class TestFormalReset(unittest.TestCase):
         confirm_disabled(manager)
         tick(manager, T0 + 5 * SECOND - 1)
         self.assertEqual(goals(manager), {'left': 0, 'right': 0})
+        self.assertEqual(manager.gripper_opens, {'left': [], 'right': []})
         tick(manager, T0 + 5 * SECOND)
         self.assertEqual(goals(manager), {'left': 1, 'right': 1})
+        self.assertEqual(manager.gripper_opens, {'left': [1.0], 'right': [1.0]})
         tick(manager, T0 + 5 * SECOND + 1)
         self.assertEqual(manager.state, manager.PREPARING)
+        self.assertEqual(manager.gripper_opens, {'left': [1.0], 'right': [1.0]})
 
         later = make_manager()
         confirm_disabled(later)
@@ -245,10 +255,12 @@ class TestFormalReset(unittest.TestCase):
         tick(success, T0 + SECOND)
         self.assertEqual(success.state, success.PREPARING)
         self.assertEqual(goals(success), {'left': 0, 'right': 0})
+        self.assertEqual(success.gripper_opens, {'left': [], 'right': []})
 
         missing = make_manager(recorder=Recorder(ready=False), reset_enabled=False)
         tick(missing, T0 + SECOND)
         self.assertEqual(missing.state, missing.FAILED)
+        self.assertEqual(missing.gripper_opens, {'left': [], 'right': []})
 
         pending = make_manager(reset_enabled=False)
         tick(pending, T0 + 4 * SECOND)
@@ -260,6 +272,7 @@ class TestFormalReset(unittest.TestCase):
             tick(abnormal, T0 + SECOND)
             self.assertEqual(abnormal.state, abnormal.FAILED)
             self.assertEqual(goals(abnormal), {'left': 0, 'right': 0})
+            self.assertEqual(abnormal.gripper_opens, {'left': [], 'right': []})
 
     def test_action_failures_are_not_retried(self):
         cases = [

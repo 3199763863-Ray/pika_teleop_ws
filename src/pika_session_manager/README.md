@@ -22,6 +22,8 @@ Recorder 失败或无回复时仍可尝试归位，但**录制状态不会被伪
 
 `STALE_STOP` / `POSE_JUMP_STOP` 是异常停止：仍请求 Recorder STOP，但进入 FAILED，**不会自动 MoveJ**。FAILED 没有自动恢复路径；操作员需检查录制、机器人和现场状态，再重启 Session Manager。初次启动只请求 PREPARE，不自动把机械臂移至预设关节位。`middle_reset_joint_degrees` 目前仅校验/保留，不发送中臂回零 Action。4000 ms 只是试验性交接缓冲，不能证明外部速度控制器已释放机器人；`arm is busy` 等 Action 拒绝仍需现场处理。
 
+正常 STOP 的双侧停机交接完成后，Manager 在左右 MoveJ 派发时还分别向 `/pika/l/gripper_percentage`、`/pika/r/gripper_percentage` 发布一次 `Float32(1.0)`，请求两侧夹爪全开。夹爪命令不等待 MoveJ 完成；即使某侧 Action Server 不可用，该侧夹爪命令仍会发布。异常 STOP、停机确认失败和 `reset_on_user_stop=false` 不发送；Manager 不监测夹爪是否实际到位，外部行为树需保持 Pika 输入模式。
+
 ## ROS 接口
 
 | 方向 | 名称 | 类型与作用 |
@@ -30,6 +32,7 @@ Recorder 失败或无回复时仍可尝试归位，但**录制状态不会被伪
 | 发布 | `/pika_session/start_allowed` | `std_msgs/msg/Bool`；reliable、transient-local、depth 1 |
 | 发布 | `/pika_session/state` | `std_msgs/msg/String`；reliable、transient-local、depth 1 |
 | 发布 | `/pika_session/force_stop_all` | `std_msgs/msg/Empty`；reliable、volatile、depth 1 |
+| 发布 | `/pika/l|r/gripper_percentage` | `std_msgs/msg/Float32(1.0)`；正常归位交接时单次请求夹爪全开 |
 | 订阅 | `/pika_teleop/left|right/state` | `pika_teleop_interfaces/msg/PikaTeleopState`；best effort、volatile、depth 1，确认本轮双侧已停用 |
 | 客户端 | `/recording/manage` | `realman_recording_msgs/srv/ManageRecording`；PREPARE、START、STOP |
 | Action 客户端 | `/l/execute_motion`、`/r/execute_motion` | `realman_msgs/action/ExecuteMotion`；正常结束时 MoveJ |

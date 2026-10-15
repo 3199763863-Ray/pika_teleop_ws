@@ -1,5 +1,12 @@
 # 项目维护记录
 
+## 2026-10-15：正常结束时请求夹爪全开
+
+- 核对 RealMan 只读源码：现有行为树路由订阅 `/pika/l|r/gripper_percentage`，在 Pika 输入模式下转发到 `/gripper_left|right/percentage/command`；夹爪管理器以 `1.0` 表示全开。未改 RealMan 端。
+- Bag 模式在该侧正常 `USER_STOP`、新 disabled State 与交接延迟均满足后，随单侧 MoveJ 派发发布一次夹爪 `Float32(1.0)`；正式模式在双侧交接后随双臂 MoveJ 各发布一次。异常停止、未确认停机、关闭自动复位时不发送。发布异常仅记日志，不阻断 MoveJ。
+- 夹爪信号不等待机械臂物理归位；现有链路不回报夹爪到位，需现场确认。同步到 `user2@192.168.31.97:/home/user2/pika_teleop_ws` 后，两包 `colcon build --symlink-install` 通过；本机通信限定的假 Recorder/Action 测试分别通过正式模式 10 项、Bag 模式 6 项，未启动真实遥操或机器人 Action。首次合并运行测试遇到同名 `test` 包的收集冲突，分包运行后全部通过。
+- 2026-10-15 用户反馈已完成现场验收，夹爪复位功能通过。部署机另有未提交的正式配置改动 `recording_task: "pick_only"`，属于本次夹爪复位之外的现场设置；本次 Git 提交不包含它，仓库默认仍为 `pick_and_place`。
+
 ## 2026-10-15：降低启动时 DDS 发现流量
 
 - 在 `ROS_DOMAIN_ID=65` 下短暂启动 Bag、官方定位器、左右串口和脚踏节点，未触发 START 或机器人 Action。逐秒网卡计数复现启动后约 5 秒的发送峰值：有线约 6–10 MB/s、WiFi 约 7–24 MB/s，随后均降至每秒几百 KB。抓包只截取包头；约 30 万个有线包、61 万个 WiFi 包为 52 字节 DDS `HEARTBEAT`，属于参与者发现/匹配流量，不是图像数据。官方位姿和夹爪话题在待机时只有本机 Bridge 订阅，故降低其 100 Hz 采样不能解决该峰值。

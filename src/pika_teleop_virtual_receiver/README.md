@@ -16,6 +16,8 @@ STOP 服务立即回执，不等 Action Server 或机器人运动。Action Serve
 
 `periodic_summary=false` 时仅在服务、状态变化、超时、恢复或首次数据异常时打印。设为 `true` 才每秒输出左右接收频率、Pose、Twist、夹爪、年龄和累计异常；本节点不会主动修复非有限数或四元数错误。
 
+正常复位交接完成时，本节点还向该侧 `/pika/l|r/gripper_percentage` 发布一次 `Float32(1.0)`，请求 RealMan 夹爪全开。它与 MoveJ 在同一交接点发出，不等待机械臂到位；即使 Action Server 不可用，夹爪命令仍会发布。异常 STOP、不完整停机确认和 `reset_on_user_stop=false` 均不发送。外部行为树需保持 Pika 输入模式，节点不监测夹爪的物理到位结果。
+
 ## 参数及当前运行值
 
 | 参数 | 代码默认 | 已提交 Bag YAML | 作用 |

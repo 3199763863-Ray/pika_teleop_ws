@@ -19,6 +19,7 @@ from rclpy.qos import (
 
 from pika_teleop_interfaces.msg import PikaTeleopState
 from pika_teleop_interfaces.srv import SetTeleopEnabled
+from std_msgs.msg import Float32
 
 from .reset_handoff import ResetHandoff
 
@@ -122,9 +123,16 @@ class PikaTeleopVirtualReceiver(Node):
                 )
                 for side in self.SIDES
             }
+            self._gripper_reset_publishers = {
+                side: self.create_publisher(
+                    Float32, f'/pika/{side[0]}/gripper_percentage', 1
+                )
+                for side in self.SIDES
+            }
         else:
             self._reset_handoffs = {}
             self._reset_clients = {}
+            self._gripper_reset_publishers = {}
         self._reset_goal_futures = {}
         self._transition_warn_ns = int(
             self.state_transition_warn_ms * NANOSECONDS_PER_MILLISECOND
@@ -387,6 +395,16 @@ class PikaTeleopVirtualReceiver(Node):
         return goal
 
     def _dispatch_reset(self, side: str) -> None:
+        try:
+            self._gripper_reset_publishers[side].publish(Float32(data=1.0))
+            self.get_logger().info(
+                f'{side.upper()} GRIPPER OPEN command published (1.0); '
+                'physical result is not monitored'
+            )
+        except Exception as exc:
+            self.get_logger().error(
+                f'{side.upper()} GRIPPER OPEN command failed: {exc}'
+            )
         client = self._reset_clients[side]
         try:
             if not client.server_is_ready():

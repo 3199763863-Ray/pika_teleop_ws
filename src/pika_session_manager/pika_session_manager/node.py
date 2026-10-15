@@ -17,7 +17,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import Bool, Empty, Float32, String
 
 from pika_teleop_interfaces.msg import PikaTeleopState
 from pika_teleop_interfaces.srv import SetTeleopEnabled
@@ -107,6 +107,12 @@ class PikaSessionManager(Node):
         self.state_publisher = self.create_publisher(
             String, '/pika_session/state', latched_qos
         )
+        self._gripper_reset_publishers = {
+            side: self.create_publisher(
+                Float32, f'/pika/{side[0]}/gripper_percentage', event_qos
+            )
+            for side in self.SIDES
+        }
         self.recording_client = self.create_client(
             ManageRecording,
             self.recording_service,
@@ -588,6 +594,16 @@ class PikaSessionManager(Node):
         self._reset_result_futures = {}
         self._reset_failures = {}
         for side in self.SIDES:
+            try:
+                self._gripper_reset_publishers[side].publish(Float32(data=1.0))
+                self.get_logger().info(
+                    f'{side.upper()} GRIPPER OPEN command published (1.0); '
+                    'physical result is not monitored'
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f'{side.upper()} GRIPPER OPEN command failed: {exc}'
+                )
             client = self.action_clients[side]
             if not client.server_is_ready():
                 self._reset_failures[side] = 'Action server unavailable'

@@ -74,6 +74,8 @@ Bag 模式的 `reset_on_user_stop=true` 只处理**已确认 ACTIVE 的该侧**�
 
 Bridge 原始输入超时会停止该侧；Mapper 的 State watchdog 会停止对应目标并要求重新启用；外部 RealMan 接收器仍需自己实现命令超时、限位和急停。Recorder 真正写盘、相机健康和真机响应由外部系统负责，单凭本仓库代码无法证明。
 
+正常 `USER_STOP` 的停机交接完成后，正式模式双侧、Bag 模式对应侧会随 MoveJ 派发，向现有 `/pika/l|r/gripper_percentage` 各发送一次 `Float32(1.0)` 请求夹爪全开。`reset_on_user_stop=false` 或异常停止不发送。RealMan 现有行为树路由需仍处于 Pika 输入模式；日志只证明命令已发布，不能证明夹爪已到位。夹爪可能先于机械臂归位完成而张开，停止前应先确认所夹物体可以释放。
+
 ## 构建与运行
 
 在目标 Ubuntu 机器的新终端执行：

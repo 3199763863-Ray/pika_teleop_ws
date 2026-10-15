@@ -16,6 +16,7 @@ try:
     from pika_teleop_interfaces.msg import PikaTeleopState
     from pika_teleop_interfaces.srv import SetTeleopEnabled
     from realman_msgs.action import ExecuteMotion
+    from std_msgs.msg import Float32
     from pika_teleop_virtual_receiver.receiver_node import PikaTeleopVirtualReceiver
 except ImportError:
     rclpy = None
@@ -51,6 +52,15 @@ class TestFakeAction(unittest.TestCase):
             goal_callback=self._goal_callback,
         )
         self.test_node = Node('bag_reset_test_driver')
+        self.gripper_commands = {'left': [], 'right': []}
+        self.gripper_subscriptions = [
+            self.test_node.create_subscription(
+                Float32, f'/pika/{side[0]}/gripper_percentage',
+                lambda msg, side=side: self.gripper_commands[side].append(msg.data),
+                10,
+            )
+            for side in ('left', 'right')
+        ]
         self.services = {
             side: self.test_node.create_client(
                 SetTeleopEnabled, f'/pika_teleop/{side}/set_enabled'
@@ -147,6 +157,12 @@ class TestFakeAction(unittest.TestCase):
             time.sleep(0.05)
         return predicate()
 
+    def _wait_for_gripper_command(self, side, timeout_sec=2.0):
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline and not self.gripper_commands[side]:
+            rclpy.spin_once(self.test_node, timeout_sec=0.05)
+        return self.gripper_commands[side]
+
     def test_goal_does_not_block_stop_or_state_callbacks(self):
         self.assertTrue(self._service_call(True, 'USER_START').success)
         self.assertTrue(self._publish_until(
@@ -160,9 +176,12 @@ class TestFakeAction(unittest.TestCase):
         self.assertTrue(self._service_call(True, 'USER_START', 'right').success)
         time.sleep(0.25)
         self.assertFalse(self.goal_received.is_set(), 'Goal preceded disabled State')
+        self.assertEqual(self.gripper_commands, {'left': [], 'right': []})
         self.assertTrue(self._publish_until(
             self.left_state, self._state(False), self.goal_received.is_set,
         ))
+        self.assertEqual(self._wait_for_gripper_command('left'), [1.0])
+        self.assertEqual(self.gripper_commands['right'], [])
         self.assertEqual(self.received_goal.command, ExecuteMotion.Goal.MOVEJ)
         self.assertEqual(self.received_goal.reference_type, ExecuteMotion.Goal.BASE)
         self.assertEqual(
@@ -255,6 +274,7 @@ class TestFeatureDisabled(unittest.TestCase):
             ])
             self.assertEqual(node._reset_clients, {})
             self.assertEqual(node._reset_handoffs, {})
+            self.assertEqual(node._gripper_reset_publishers, {})
             request = SetTeleopEnabled.Request()
             request.enable = False
             request.reason = 'USER_STOP'

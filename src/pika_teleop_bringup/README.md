@@ -11,9 +11,9 @@
 
 两模式均由 Bridge 订阅官方 `/pika_pose_l|r` 和 `/gripper_l|r/joint_state`，以 20 Hz 发布 State；Mapper 对有效侧以 20 Hz 发布 Pose/速度，夹爪命令独立限频为最多 4 Hz。Bag launch 不自动调用 `ros2 bag record`，也不模拟双击。两个 launch 使用相同的 `set_enabled` 服务名，不能同时运行。
 
-Bag YAML 默认 `reset_on_user_stop: true`。该模式只有已确认 ACTIVE 的某一侧收到三击或 `scripts/pika_stop.sh <side>` 形成的 `USER_STOP` 时，才等待新 disabled State 和可配置的交接延迟（`reset_dispatch_delay_ms` 当前试验值 4000 ms），再向 `/l/execute_motion` 或 `/r/execute_motion` 异步下发**该侧**预设六关节 MoveJ。关节角、Action 名、速度和交接时长都直接写在 [`pika_bag_config.yam`](config/ros/pika_bag_config.yam)，运行时不读取正式配置。需要维持旧 Bag 行为时，把 `reset_on_user_stop` 改为 `false` 并重启 Bag launch。缺少 Action Server 时 STOP 仍成功，只有复位被跳过并告警；Goal 发出/接受不代表运动完成，必须现场确认 MoveJ 已结束后才再次 START。
+Bag YAML 默认 `reset_on_user_stop: true`。该模式只有已确认 ACTIVE 的某一侧收到三击或 `scripts/pika_stop.sh <side>` 形成的 `USER_STOP` 时，才等待新 disabled State 和可配置的交接延迟（`reset_dispatch_delay_ms` 当前试验值 4000 ms），再向 `/l/execute_motion` 或 `/r/execute_motion` 异步下发**该侧**预设六关节 MoveJ。关节角、Action 名、速度和交接时长都直接写在 [`pika_bag_config.yam`](config/ros/pika_bag_config.yam)，运行时不读取正式配置。需要维持旧 Bag 行为时，把 `reset_on_user_stop` 改为 `false` 并重启 Bag launch。缺少 Action Server 时 STOP 仍成功，机械臂 MoveJ 会被跳过并告警，夹爪全开请求仍会发送；Goal 发出/接受不代表运动完成，必须现场确认 MoveJ 已结束后才再次 START。
 
-正式 YAML 的 Bridge `stale_stop_ms=1000`；Session Manager `reset_on_user_stop=true`、`reset_dispatch_delay_ms=4000`、`stop_state_timeout_ms=6000`。正常 USER_STOP 会先关双侧遥操并请求 Recorder STOP；只有本轮双侧新 disabled State 都到达，才计时派发**双臂** MoveJ。Recorder STOP 无回复或失败不会阻塞归位，但结果仍标异常，归位后留在 FAILED，须人工核查录制；Action Goal 与 Result 都会等待。设 `reset_on_user_stop=false` 可只停止录制、不派发 MoveJ。Bag 的单侧 fire-and-forget 流程没有改动。
+正式 YAML 的 Bridge `stale_stop_ms=1000`；Session Manager `reset_on_user_stop=true`、`reset_dispatch_delay_ms=4000`、`stop_state_timeout_ms=6000`。正常 USER_STOP 会先关双侧遥操并请求 Recorder STOP；只有本轮双侧新 disabled State 都到达，才计时派发**双臂** MoveJ。Recorder STOP 无回复或失败不会阻塞归位，但结果仍标异常，归位后留在 FAILED，须人工核查录制；Action Goal 与 Result 都会等待。设 `reset_on_user_stop=false` 可只停止录制、不派发 MoveJ。Bag 的单侧 MoveJ 仍为 fire-and-forget；两模式在正常归位交接时，还向现有夹爪百分比 Topic 发送一次 1.0 全开请求。
 
 ## 构建与启动
 
