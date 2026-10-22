@@ -4,3 +4,4 @@ log/
 
 _pycache_/
 *.pyc
+/pika_teleop_ws.git/
