@@ -63,7 +63,7 @@ pika_session_manager:
     recording_service: "/recording/manage"
     recording_status_topic: "/recording/status"
     recording_profile: "teleop_v1"
-    recording_task: "pick_and_place"
+    recording_task: "pick_only_light-weak_1021"
     recording_duration_sec: 0
     record_cameras: true
     prepare_retry_sec: 2.0
